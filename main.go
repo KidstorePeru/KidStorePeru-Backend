@@ -60,7 +60,7 @@ func main() {
 		"http://localhost:3000":            true,
 		"https://your-production-site.com": true,
 		"chrome-extension://gmmkjpcadciiokjpikmkkmapphbmdjok":    true,
-		"https://kidstoreperu-frontend-react-dev.up.railway.app": true,
+		"https://kidstoreperu-frontend-react-production.up.railway.app": true,
 	}
 
 	router.Use(cors.New(cors.Config{
