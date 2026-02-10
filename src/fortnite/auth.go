@@ -138,70 +138,27 @@ func HandlerFinishConnectFortniteAccount(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// //print all
-		// fmt.Println("Response Status Code:", respToken.StatusCode)
-		// fmt.Println("Response Headers:", respToken.Header)
-		// fmt.Println("Response Body:", respToken.Body)
-
-		// //print all request
-		// fmt.Println("Request Method:", reqToken.Method)
-		// fmt.Println("Request URL:", reqToken.URL)
-		// fmt.Println("Request Headers:", reqToken.Header)
-		// fmt.Println("Request Body:", reqToken.Body)
-		// fmt.Println("Parsed content", tokenResultStep1)
-
-		//step 2, get Secret and Device Id
-		reqSecrets, _ := http.NewRequest("POST", fmt.Sprintf("https://account-public-service-prod.ol.epicgames.com/account/api/public/account/%s/deviceAuth", tokenResultStep1.AccountId), nil)
-		reqSecrets.Header.Set("Authorization", "Bearer "+tokenResultStep1.AccessToken)
-
-		respSecrets, err := client.Do(reqSecrets)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not get device secrets", "details": err.Error()})
-			return
-		}
-		defer respSecrets.Body.Close()
-		var deviceSecrets types.DeviceSecretsResponse
-		if err := json.NewDecoder(respSecrets.Body).Decode(&deviceSecrets); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Invalid device secrets response", "details": err.Error()})
-			return
-		}
-
-		//PRINT ALL DEVICE SECRETS
-		//fmt.Println("Device Secrets Status Code:", respSecrets.StatusCode)
-		//parse the device secrets
-		var deviceSecretsParsed = types.GameAccountSecrets{
-			DeviceId:  deviceSecrets.DeviceId,
-			AccountId: tokenResultStep1.AccountId,
-			Secret:    deviceSecrets.Secret,
-		}
-
-		// Step 3: device auth with secret and device id
-		loginResult, err := DeviceAuthIdGrant(db, deviceSecretsParsed)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not get device auth ID", "details": err.Error()})
-			return
-		}
-
-		//store the account in the database
-		AccountID, err := uuid.Parse(loginResult.AccountId)
+		// Parse account ID from step 1
+		AccountID, err := uuid.Parse(tokenResultStep1.AccountId)
 		if err != nil {
 			fmt.Println("Failed to parse game ID:", err)
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid account ID format", "details": err.Error()})
 			return
 		}
 
-		//save the game account
+		// Save the game account immediately after step 1 (before steps 2 and 3)
+		// This ensures the account is saved even if steps 2 and 3 fail
 		err = database.AddGameAccount(db, types.GameAccount{
 			ID:                  AccountID,
-			DisplayName:         loginResult.DisplayName,
+			DisplayName:         tokenResultStep1.DisplayName,
 			RemainingGifts:      5,
 			PaVos:               0,
-			AccessToken:         loginResult.AccessToken,
-			AccessTokenExp:      loginResult.AccessTokenExpiration,
-			AccessTokenExpDate:  time.Now().Add(time.Duration(loginResult.AccessTokenExpiration) * time.Second),
-			RefreshToken:        loginResult.RefreshToken,
-			RefreshTokenExp:     loginResult.RefreshTokenExpiration,
-			RefreshTokenExpDate: time.Now().Add(time.Duration(loginResult.RefreshTokenExpiration) * time.Second),
+			AccessToken:         tokenResultStep1.AccessToken,
+			AccessTokenExp:      tokenResultStep1.AccessTokenExpiration,
+			AccessTokenExpDate:  time.Now().Add(time.Duration(tokenResultStep1.AccessTokenExpiration) * time.Second),
+			RefreshToken:        tokenResultStep1.RefreshToken,
+			RefreshTokenExp:     tokenResultStep1.RefreshTokenExpiration,
+			RefreshTokenExpDate: time.Now().Add(time.Duration(tokenResultStep1.RefreshTokenExpiration) * time.Second),
 			OwnerUserID:         userIdUUID,
 			CreatedAt:           time.Now(),
 			UpdatedAt:           time.Now(),
@@ -212,42 +169,101 @@ func HandlerFinishConnectFortniteAccount(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Save device secrets in the database
-		err = database.AddGameAccountSecrets(db, types.GameAccountSecrets{
-			Owner_user_id: userIdUUID,
-			DeviceId:      deviceSecrets.DeviceId,
-			AccountId:     deviceSecrets.AccountId,
-			Secret:        deviceSecrets.Secret,
-		})
+		// Try step 2: get Secret and Device Id (optional - don't fail if this breaks)
+		var deviceSecrets *types.DeviceSecretsResponse
+		var deviceSecretsParsed *types.GameAccountSecrets
+		reqSecrets, _ := http.NewRequest("POST", fmt.Sprintf("https://account-public-service-prod.ol.epicgames.com/account/api/public/account/%s/deviceAuth", tokenResultStep1.AccountId), nil)
+		reqSecrets.Header.Set("Authorization", "Bearer "+tokenResultStep1.AccessToken)
+
+		respSecrets, err := client.Do(reqSecrets)
 		if err != nil {
-			fmt.Println("Error saving game account secrets:", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not save game account secrets", "details": err.Error()})
-			// delete the game account if we can't save the secrets
-			_ = database.DeleteGameAccountByID(db, AccountID)
-			return
+			fmt.Printf("Warning: Could not get device secrets (step 2 failed): %v\n", err)
+			// Continue without device secrets - account is already saved
+		} else {
+			if respSecrets != nil && respSecrets.Body != nil {
+				defer respSecrets.Body.Close()
+			}
+			if respSecrets != nil && respSecrets.StatusCode == 200 {
+				deviceSecrets = &types.DeviceSecretsResponse{}
+				if err := json.NewDecoder(respSecrets.Body).Decode(deviceSecrets); err != nil {
+					fmt.Printf("Warning: Invalid device secrets response (step 2 failed): %v\n", err)
+				} else {
+					// Parse the device secrets
+					deviceSecretsParsed = &types.GameAccountSecrets{
+						DeviceId:  deviceSecrets.DeviceId,
+						AccountId: tokenResultStep1.AccountId,
+						Secret:    deviceSecrets.Secret,
+					}
+				}
+			} else if respSecrets != nil {
+				fmt.Printf("Warning: Device secrets API returned non-200 status: %d\n", respSecrets.StatusCode)
+			}
 		}
 
-		//get account pavos
+		// Try step 3: device auth with secret and device id (optional - don't fail if this breaks)
+		var loginResult *types.LoginResultResponse
+		if deviceSecretsParsed != nil {
+			result, err := DeviceAuthIdGrant(db, *deviceSecretsParsed)
+			if err != nil {
+				fmt.Printf("Warning: Could not get device auth ID (step 3 failed): %v\n", err)
+				// Continue without step 3 result - account is already saved
+			} else {
+				loginResult = &result
+				// Update account with tokens from step 3 if available
+				err = database.UpdateGameAccount(db, types.GameAccount{
+					ID:                  AccountID,
+					AccessToken:         loginResult.AccessToken,
+					AccessTokenExp:      loginResult.AccessTokenExpiration,
+					AccessTokenExpDate:  time.Now().Add(time.Duration(loginResult.AccessTokenExpiration) * time.Second),
+					RefreshToken:        loginResult.RefreshToken,
+					RefreshTokenExp:     loginResult.RefreshTokenExpiration,
+					RefreshTokenExpDate: time.Now().Add(time.Duration(loginResult.RefreshTokenExpiration) * time.Second),
+					UpdatedAt:           time.Now(),
+				})
+				if err != nil {
+					fmt.Printf("Warning: Could not update account with step 3 tokens: %v\n", err)
+				}
+			}
+		}
+
+		// Save device secrets in the database if we got them (optional)
+		if deviceSecrets != nil && deviceSecretsParsed != nil {
+			err = database.AddGameAccountSecrets(db, types.GameAccountSecrets{
+				Owner_user_id: userIdUUID,
+				DeviceId:      deviceSecrets.DeviceId,
+				AccountId:     deviceSecrets.AccountId,
+				Secret:        deviceSecrets.Secret,
+			})
+			if err != nil {
+				fmt.Printf("Warning: Could not save game account secrets: %v\n", err)
+				// Don't delete the game account if we can't save the secrets
+			}
+		}
+
+		// Get account pavos
 		pavos, err := GetAccountPavos(db, AccountID)
 		if err != nil {
 			pavos = 0 // Default to 0 if we can't fetch
 			fmt.Printf("Could not fetch account pavos, defaulting to 0: %v\n", err)
 		}
 
-		//save the game account pavos
+		// Save the game account pavos
 		err = database.UpdateGameAccount(db, types.GameAccount{
 			ID:    AccountID,
 			PaVos: pavos,
 		})
 		if err != nil {
-			fmt.Println("Error saving game account:", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not save game account", "details": err.Error()})
-			//dont delete the game account if we can't save the pavos
-			//_ = database.DeleteGameAccountByID(db, AccountID)
-			return
+			fmt.Printf("Warning: Could not update account pavos: %v\n", err)
+			// Don't delete the game account if we can't save the pavos
 		}
 
-		c.JSON(http.StatusOK, gin.H{"success": true, "message": "Fortnite account connected successfully", "id": loginResult.AccountId, "username": loginResult.DisplayName, "pavos": pavos})
+		// Use display name from step 3 if available, otherwise from step 1
+		displayName := tokenResultStep1.DisplayName
+		if loginResult != nil && loginResult.DisplayName != "" {
+			displayName = loginResult.DisplayName
+		}
+
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": "Fortnite account connected successfully", "id": tokenResultStep1.AccountId, "username": displayName, "pavos": pavos})
 	}
 
 }
@@ -523,6 +539,15 @@ func ExecuteOperationWithRefresh(request *http.Request, db *sql.DB, GameAccountI
 
 		deviceSecrets, err := database.GetGameAccountSecrets(db, GameAccountStr)
 		if err != nil {
+			// Check if the error is because secrets don't exist (account was created without steps 2 and 3)
+			if err == sql.ErrNoRows {
+				fmt.Printf("Account %s has no device secrets and refresh token failed. Deleting account as it is unusable.\n", GameAccountStr)
+				deleteErr := database.DeleteGameAccountByID(db, GameAccount.ID)
+				if deleteErr != nil {
+					fmt.Printf("Failed to delete account %s: %v\n", GameAccountStr, deleteErr)
+				}
+				return nil, fmt.Errorf("account has no device secrets and refresh token expired - account deleted: %w", err)
+			}
 			fmt.Printf("Could not get device secrets for account %s: %v\n", GameAccountStr, err)
 			return nil, fmt.Errorf("could not get device secrets: %w", err)
 		}
@@ -530,8 +555,12 @@ func ExecuteOperationWithRefresh(request *http.Request, db *sql.DB, GameAccountI
 
 		newTokens, err = DeviceAuthIdGrant(db, deviceSecrets)
 		if err != nil {
-			fmt.Printf("DeviceAuthIdGrant failed for account %s: %v\n", GameAccountStr, err)
-			return nil, fmt.Errorf("could not refresh access token using device auth: %w", err)
+			fmt.Printf("DeviceAuthIdGrant failed for account %s: %v. Deleting account as it is unusable.\n", GameAccountStr, err)
+			deleteErr := database.DeleteGameAccountByID(db, GameAccount.ID)
+			if deleteErr != nil {
+				fmt.Printf("Failed to delete account %s: %v\n", GameAccountStr, deleteErr)
+			}
+			return nil, fmt.Errorf("could not refresh access token using device auth - account deleted: %w", err)
 		}
 
 		err = database.UpdateGameAccount(db, types.GameAccount{
