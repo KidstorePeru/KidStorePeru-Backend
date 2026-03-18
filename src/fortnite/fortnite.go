@@ -880,4 +880,85 @@ func HandlerUpdatePavosForAccount(db *sql.DB) gin.HandlerFunc {
 			},
 		})
 	}
+
+}
+
+// HandlerUpdateRemainingGifts allows manually adjusting remaining gifts for an account
+func HandlerUpdateRemainingGifts(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		result := utils.ProtectedEndpointHandler(c)
+		if result != 200 {
+			return
+		}
+
+		var req struct {
+			AccountID string `json:"account_id" binding:"required"`
+			Type      string `json:"type" binding:"required"` // "add" | "subtract" | "override"
+			Amount    int    `json:"amount" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid request format", "details": err.Error()})
+			return
+		}
+
+		if req.Type != "add" && req.Type != "subtract" && req.Type != "override" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Type must be 'add', 'subtract' or 'override'"})
+			return
+		}
+
+		accountID, err := uuid.Parse(req.AccountID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid account ID"})
+			return
+		}
+
+		gameAccount, err := database.GetGameAccount(db, accountID)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "Account not found"})
+			return
+		}
+
+		_, userID, err := utils.GetUserIdFromToken(c)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Unauthorized"})
+			return
+		}
+
+		isAdmin := utils.IsTokenAdmin(c)
+		if !isAdmin && gameAccount.OwnerUserID != userID {
+			c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "No permission"})
+			return
+		}
+
+		current := gameAccount.RemainingGifts
+		var newVal int
+		switch req.Type {
+		case "add":
+			newVal = current + req.Amount
+		case "subtract":
+			newVal = current - req.Amount
+			if newVal < 0 {
+				newVal = 0
+			}
+		case "override":
+			newVal = req.Amount
+		}
+		if newVal > 5 {
+			newVal = 5
+		}
+
+		err = database.UpdateRemainingGifts(db, accountID, newVal)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not update remaining gifts"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"success":            true,
+			"previous_remaining": current,
+			"new_remaining":      newVal,
+			"account_id":         req.AccountID,
+			"display_name":       gameAccount.DisplayName,
+		})
+	}
 }
