@@ -843,12 +843,16 @@ func HandlerUpdatePavosForAccount(db *sql.DB) gin.HandlerFunc {
 		}
 
 		var newPavos int
+		if req.Amount == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Amount is required"})
+			return
+		}
 		if req.Type == "override" {
 			// Set pavos to the specified amount
-			newPavos = req.Amount
+			newPavos = *req.Amount
 		} else if req.Type == "add" {
 			// Add the amount to current pavos
-			newPavos = currentPavos + req.Amount
+			newPavos = currentPavos + *req.Amount
 		}
 
 		// Ensure pavos don't go negative
@@ -876,7 +880,7 @@ func HandlerUpdatePavosForAccount(db *sql.DB) gin.HandlerFunc {
 				"previous_pavos": currentPavos,
 				"new_pavos":      newPavos,
 				"operation":      req.Type,
-				"amount":         req.Amount,
+				"amount":         *req.Amount,
 			},
 		})
 	}
@@ -894,7 +898,7 @@ func HandlerUpdateRemainingGifts(db *sql.DB) gin.HandlerFunc {
 		var req struct {
 			AccountID string `json:"account_id" binding:"required"`
 			Type      string `json:"type" binding:"required"` // "add" | "subtract" | "override"
-			Amount    int    `json:"amount" binding:"required"`
+			Amount    *int   `json:"amount"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid request format", "details": err.Error()})
@@ -930,18 +934,22 @@ func HandlerUpdateRemainingGifts(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		if req.Amount == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Amount is required"})
+			return
+		}
 		current := gameAccount.RemainingGifts
 		var newVal int
 		switch req.Type {
 		case "add":
-			newVal = current + req.Amount
+			newVal = current + *req.Amount
 		case "subtract":
-			newVal = current - req.Amount
+			newVal = current - *req.Amount
 			if newVal < 0 {
 				newVal = 0
 			}
 		case "override":
-			newVal = req.Amount
+			newVal = *req.Amount
 		}
 		if newVal > 5 {
 			newVal = 5
