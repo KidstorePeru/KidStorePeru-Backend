@@ -91,6 +91,7 @@ type User struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
+
 type GameAccount struct {
 	ID                  uuid.UUID
 	DisplayName         string
@@ -130,7 +131,7 @@ type Transaction struct {
 
 type FriendRequest struct {
 	AccountID string `json:"accountId"`
-	Groups    []any  `json:"groups"` // adjust type if needed
+	Groups    []any  `json:"groups"`
 	Mutual    int    `json:"mutual"`
 	Alias     string `json:"alias"`
 	Note      string `json:"note"`
@@ -182,6 +183,7 @@ type Login struct {
 	User     string `form:"user" json:"user" xml:"user" binding:"required"`
 	Password string `form:"password" json:"password" xml:"password" binding:"required"`
 }
+
 type GiftRequest struct {
 	AccountID    string `json:"account_id" binding:"required"`
 	SenderName   string `json:"sender_username" binding:"required"`
@@ -204,6 +206,7 @@ type UpdatePavosRequest struct {
 type AuthorizationCode struct {
 	Code string `json:"code"`
 }
+
 type AccountIdStr struct {
 	AccountId string
 }

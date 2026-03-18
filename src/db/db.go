@@ -299,7 +299,7 @@ func AddTransaction(db *sql.DB, tx types.Transaction) error {
 	return err
 }
 
-// DeleteOldestFakeTransactions removes the oldest fake (manual-adjustment) transactions
+// DeleteOldestFakeTransactions removes the oldest manual-adjustment transactions
 // for an account. Used when manually adding back gift slots so the cooldown is freed.
 func DeleteOldestFakeTransactions(db *sql.DB, accountID uuid.UUID, count int) {
 	if count <= 0 {
@@ -319,6 +319,31 @@ func DeleteOldestFakeTransactions(db *sql.DB, accountID uuid.UUID, count int) {
 	if err != nil {
 		fmt.Printf("Warning: could not delete fake transactions: %v\n", err)
 	}
+}
+
+// GetAllSlotExpiryTimes returns the expiry time for each used gift slot in the last 24h
+func GetAllSlotExpiryTimes(db *sql.DB, accountID uuid.UUID) ([]time.Time, error) {
+	rows, err := db.Query(`
+		SELECT created_at + INTERVAL '24 hours' as expiry_time
+		FROM transactions
+		WHERE game_account_id = $1
+		AND created_at >= NOW() - INTERVAL '24 hours'
+		ORDER BY created_at ASC
+	`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var times []time.Time
+	for rows.Next() {
+		var t time.Time
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		times = append(times, t)
+	}
+	return times, nil
 }
 
 func GetTransaction(db *sql.DB, id uuid.UUID) (types.Transaction, error) {
@@ -505,10 +530,16 @@ func GetGiftSlotStatus(db *sql.DB, accountID uuid.UUID) (map[string]interface{},
 		return nil, fmt.Errorf("could not get next slot time: %w", err)
 	}
 
+	slotExpiryTimes, err := GetAllSlotExpiryTimes(db, accountID)
+	if err != nil || slotExpiryTimes == nil {
+		slotExpiryTimes = []time.Time{}
+	}
+
 	status := map[string]interface{}{
-		"remaining_gifts": remainingGifts,
-		"max_gifts":       5,
-		"used_gifts":      5 - remainingGifts,
+		"remaining_gifts":   remainingGifts,
+		"max_gifts":         5,
+		"used_gifts":        5 - remainingGifts,
+		"slot_expiry_times": slotExpiryTimes,
 	}
 
 	if nextSlotTime != nil {
@@ -572,51 +603,53 @@ func BatchGetGiftSlotStatus(db *sql.DB, accountIDs []uuid.UUID) (map[uuid.UUID]m
 		return make(map[uuid.UUID]map[string]interface{}), nil
 	}
 
-	// Get remaining gifts for all accounts
 	remainingGiftsMap, err := BatchCalculateRemainingGifts(db, accountIDs)
 	if err != nil {
 		return nil, fmt.Errorf("could not batch calculate remaining gifts: %w", err)
 	}
 
-	// Get next slot times for all accounts in one query
+	// Get ALL slot expiry times for all accounts in one query
 	rows, err := db.Query(`
-		SELECT DISTINCT ON (game_account_id) game_account_id, created_at + INTERVAL '24 hours' as next_slot_time
-		FROM transactions 
+		SELECT game_account_id, created_at + INTERVAL '24 hours' as expiry_time
+		FROM transactions
 		WHERE game_account_id = ANY($1)
 		AND created_at >= NOW() - INTERVAL '24 hours'
 		ORDER BY game_account_id, created_at ASC
 	`, pq.Array(accountIDs))
 
 	if err != nil {
-		return nil, fmt.Errorf("could not batch get next slot times: %w", err)
+		return nil, fmt.Errorf("could not batch get slot expiry times: %w", err)
 	}
 	defer rows.Close()
 
-	nextSlotTimes := make(map[uuid.UUID]*time.Time)
+	allExpiryTimes := make(map[uuid.UUID][]time.Time)
 	for rows.Next() {
-		var accountID uuid.UUID
-		var nextSlotTime time.Time
-		if err := rows.Scan(&accountID, &nextSlotTime); err != nil {
-			return nil, fmt.Errorf("could not scan next slot time: %w", err)
+		var accID uuid.UUID
+		var expiryTime time.Time
+		if err := rows.Scan(&accID, &expiryTime); err != nil {
+			return nil, fmt.Errorf("could not scan expiry time: %w", err)
 		}
-		nextSlotTimes[accountID] = &nextSlotTime
+		allExpiryTimes[accID] = append(allExpiryTimes[accID], expiryTime)
 	}
 
-	// Build status for all accounts
 	result := make(map[uuid.UUID]map[string]interface{})
 	for _, accountID := range accountIDs {
 		remainingGifts := remainingGiftsMap[accountID]
-		nextSlotTime := nextSlotTimes[accountID]
-
-		status := map[string]interface{}{
-			"remaining_gifts": remainingGifts,
-			"max_gifts":       5,
-			"used_gifts":      5 - remainingGifts,
+		expiryTimes := allExpiryTimes[accountID]
+		if expiryTimes == nil {
+			expiryTimes = []time.Time{}
 		}
 
-		if nextSlotTime != nil {
-			status["next_slot_available"] = nextSlotTime
-			status["time_until_next_slot"] = time.Until(*nextSlotTime).String()
+		status := map[string]interface{}{
+			"remaining_gifts":   remainingGifts,
+			"max_gifts":         5,
+			"used_gifts":        5 - remainingGifts,
+			"slot_expiry_times": expiryTimes,
+		}
+
+		if len(expiryTimes) > 0 {
+			status["next_slot_available"] = expiryTimes[0]
+			status["time_until_next_slot"] = time.Until(expiryTimes[0]).String()
 		} else {
 			status["next_slot_available"] = nil
 			status["time_until_next_slot"] = "All slots available"
