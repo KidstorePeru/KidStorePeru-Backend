@@ -299,26 +299,36 @@ func AddTransaction(db *sql.DB, tx types.Transaction) error {
 	return err
 }
 
-// DeleteOldestFakeTransactions removes the oldest manual-adjustment transactions
-// for an account. Used when manually adding back gift slots so the cooldown is freed.
-func DeleteOldestFakeTransactions(db *sql.DB, accountID uuid.UUID, count int) {
+// DeleteNewestTransactions removes the N most recent transactions (any type)
+// for an account within the last 24h. Used when manually adding back gift slots
+// so the slot that expires soonest (most recent = expires latest... wait no:
+// most recent created_at = expires last, oldest created_at = expires soonest)
+// To free the slot expiring soonest, delete the OLDEST transaction (ASC).
+// NOTE: "soonest to expire" = oldest created_at. So ORDER BY created_at ASC = correct for freeing next slot.
+// But the user sees timers sorted ASC (soonest first). Adding +1 should remove the soonest timer = oldest tx.
+func DeleteNewestTransactions(db *sql.DB, accountID uuid.UUID, count int) {
 	if count <= 0 {
 		return
 	}
+	// Delete oldest transactions first (these are the ones expiring soonest)
 	_, err := db.Exec(`
 		DELETE FROM transactions
 		WHERE id IN (
 			SELECT id FROM transactions
 			WHERE game_account_id = $1
-			AND object_store_id = 'manual-adjustment'
 			AND created_at >= NOW() - INTERVAL '24 hours'
 			ORDER BY created_at ASC
 			LIMIT $2
 		)
 	`, accountID, count)
 	if err != nil {
-		fmt.Printf("Warning: could not delete fake transactions: %v\n", err)
+		fmt.Printf("Warning: could not delete transactions: %v\n", err)
 	}
+}
+
+// DeleteOldestFakeTransactions kept for backward compatibility - now delegates to DeleteNewestTransactions
+func DeleteOldestFakeTransactions(db *sql.DB, accountID uuid.UUID, count int) {
+	DeleteNewestTransactions(db, accountID, count)
 }
 
 // GetAllSlotExpiryTimes returns the expiry time for each used gift slot in the last 24h
@@ -608,7 +618,7 @@ func BatchGetGiftSlotStatus(db *sql.DB, accountIDs []uuid.UUID) (map[uuid.UUID]m
 		return nil, fmt.Errorf("could not batch calculate remaining gifts: %w", err)
 	}
 
-	// Get ALL slot expiry times for all accounts in one query
+	// Get ALL slot expiry times for all accounts in one query (oldest first = soonest to expire)
 	rows, err := db.Query(`
 		SELECT game_account_id, created_at + INTERVAL '24 hours' as expiry_time
 		FROM transactions
