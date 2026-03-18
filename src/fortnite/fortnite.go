@@ -883,7 +883,9 @@ func HandlerUpdatePavosForAccount(db *sql.DB) gin.HandlerFunc {
 
 }
 
-// HandlerUpdateRemainingGifts allows manually adjusting remaining gifts for an account
+// HandlerUpdateRemainingGifts allows manually adjusting remaining gifts for an account.
+// When subtracting slots, it also inserts fake transactions so the 24h cooldown
+// is calculated identically to real gifts by the backend.
 func HandlerUpdateRemainingGifts(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		result := utils.ProtectedEndpointHandler(c)
@@ -947,6 +949,39 @@ func HandlerUpdateRemainingGifts(db *sql.DB) gin.HandlerFunc {
 			newVal = 5
 		}
 
+		// Calcular cuántos slots se están usando (restando)
+		slotsUsed := current - newVal
+
+		// Si se están restando slots, insertar transacciones ficticias
+		// para que el cooldown de 24h funcione igual que con regalos reales
+		if slotsUsed > 0 {
+			senderName := gameAccount.DisplayName
+			for i := 0; i < slotsUsed; i++ {
+				fakeTx := types.Transaction{
+					ID:              uuid.New(),
+					GameAccountID:   accountID,
+					SenderName:      &senderName,
+					ReceiverID:      strPtr("manual-adjustment"),
+					ReceiverName:    strPtr("Ajuste manual"),
+					ObjectStoreID:   "manual-adjustment",
+					ObjectStoreName: "Ajuste manual",
+					RegularPrice:    0,
+					FinalPrice:      0,
+					GiftImage:       "",
+				}
+				if err := database.AddTransaction(db, fakeTx); err != nil {
+					fmt.Printf("Warning: could not insert fake transaction: %v\n", err)
+				}
+			}
+		}
+
+		// Si se están agregando slots (add/override con más slots),
+		// eliminar transacciones ficticias para liberar slots
+		slotsFreed := newVal - current
+		if slotsFreed > 0 {
+			database.DeleteOldestFakeTransactions(db, accountID, slotsFreed)
+		}
+
 		err = database.UpdateRemainingGifts(db, accountID, newVal)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not update remaining gifts"})
@@ -961,4 +996,9 @@ func HandlerUpdateRemainingGifts(db *sql.DB) gin.HandlerFunc {
 			"display_name":       gameAccount.DisplayName,
 		})
 	}
+}
+
+// strPtr returns a pointer to a string value
+func strPtr(s string) *string {
+	return &s
 }

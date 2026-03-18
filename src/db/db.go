@@ -297,7 +297,28 @@ func AddTransaction(db *sql.DB, tx types.Transaction) error {
 		fmt.Printf("Error adding transaction: %v", err)
 	}
 	return err
+}
 
+// DeleteOldestFakeTransactions removes the oldest fake (manual-adjustment) transactions
+// for an account. Used when manually adding back gift slots so the cooldown is freed.
+func DeleteOldestFakeTransactions(db *sql.DB, accountID uuid.UUID, count int) {
+	if count <= 0 {
+		return
+	}
+	_, err := db.Exec(`
+		DELETE FROM transactions
+		WHERE id IN (
+			SELECT id FROM transactions
+			WHERE game_account_id = $1
+			AND object_store_id = 'manual-adjustment'
+			AND created_at >= NOW() - INTERVAL '24 hours'
+			ORDER BY created_at ASC
+			LIMIT $2
+		)
+	`, accountID, count)
+	if err != nil {
+		fmt.Printf("Warning: could not delete fake transactions: %v\n", err)
+	}
 }
 
 func GetTransaction(db *sql.DB, id uuid.UUID) (types.Transaction, error) {
