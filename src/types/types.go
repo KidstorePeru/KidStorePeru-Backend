@@ -197,7 +197,7 @@ type GiftRequest struct {
 type UpdatePavosRequest struct {
 	AccountID string `json:"account_id" binding:"required"`
 	Type      string `json:"type" binding:"required"` // "override" or "add"
-	Amount    int    `json:"amount" binding:"required"`
+	Amount    int    `json:"amount"`
 }
 
 // Other types

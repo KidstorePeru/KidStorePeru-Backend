@@ -267,15 +267,20 @@ func HandlerGetGameAccountsByOwner(db *sql.DB) gin.HandlerFunc {
 			realTimeRemainingGifts := remainingGiftsMap[account.ID]
 
 			// Fall back to stored value if batch calculation failed
-			if realTimeRemainingGifts == 0 && giftSlotStatus == nil {
-				realTimeRemainingGifts = account.RemainingGifts
-			}
+		// Use minimum between calculated and stored (respects manual adjustments)
+		finalRemainingGifts := realTimeRemainingGifts
+		if account.RemainingGifts < realTimeRemainingGifts {
+			finalRemainingGifts = account.RemainingGifts
+		}
+		if finalRemainingGifts < 0 {
+			finalRemainingGifts = 0
+		}
 
 			resultAccounts = append(resultAccounts, types.SimplifiedAccount{
 				ID:             accountIDStr,
 				DisplayName:    account.DisplayName,
 				Pavos:          account.PaVos,
-				RemainingGifts: realTimeRemainingGifts,
+				RemainingGifts: finalRemainingGifts,
 				GiftSlotStatus: giftSlotStatus,
 			})
 		}
@@ -401,15 +406,20 @@ func HandlerGetAllGameAccounts(db *sql.DB) gin.HandlerFunc {
 			realTimeRemainingGifts := remainingGiftsMap[account.ID]
 
 			// Fall back to stored value if batch calculation failed
-			if realTimeRemainingGifts == 0 && giftSlotStatus == nil {
-				realTimeRemainingGifts = account.RemainingGifts
-			}
+		// Use minimum between calculated and stored (respects manual adjustments)
+		finalRemainingGifts2 := realTimeRemainingGifts
+		if account.RemainingGifts < realTimeRemainingGifts {
+			finalRemainingGifts2 = account.RemainingGifts
+		}
+		if finalRemainingGifts2 < 0 {
+			finalRemainingGifts2 = 0
+		}
 
 			resultAccounts = append(resultAccounts, types.SimplifiedAccount{
 				ID:             accountIDStr,
 				DisplayName:    account.DisplayName,
 				Pavos:          account.PaVos,
-				RemainingGifts: realTimeRemainingGifts,
+				RemainingGifts: finalRemainingGifts2,
 				GiftSlotStatus: giftSlotStatus,
 			})
 		}
