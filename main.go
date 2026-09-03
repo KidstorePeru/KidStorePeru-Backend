@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,6 +27,9 @@ func main() {
 
 	// Configuration (including .env loading) is processed once in
 	// utils' package init(). See src/utils/config.go.
+	if err := utils.ValidateConfig(); err != nil {
+		log.Fatal(err)
+	}
 	cfg := utils.Config
 
 	psqlInfo := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
