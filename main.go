@@ -4,10 +4,15 @@ import (
 	"KidStoreBotBE/src/fortnite"
 	page "KidStoreBotBE/src/page"
 	"KidStoreBotBE/src/utils"
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -31,9 +36,13 @@ func main() {
 	}
 	defer db.Close()
 
-	err = db.Ping()
-	if err != nil {
-		fmt.Printf("Error connecting to the database: %v", err)
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	db.SetConnMaxIdleTime(5 * time.Minute)
+
+	if err := db.Ping(); err != nil {
+		fmt.Printf("Error connecting to the database: %v\n", err)
 		panic(err)
 	}
 
@@ -114,7 +123,27 @@ func main() {
 	go fortnite.StartFriendRequestHandler(db, cfg.AcceptFriendsInSeconds)
 	go fortnite.UpdateRemainingGiftsInAccounts(db)
 
-	if err := router.Run(":" + cfg.Port_HTTP); err != nil {
-		panic(err)
+	srv := &http.Server{
+		Addr:              ":" + cfg.Port_HTTP,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			panic(err)
+		}
+	}()
+	fmt.Printf("listening on :%s\n", cfg.Port_HTTP)
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	<-quit
+	fmt.Println("shutting down...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		fmt.Printf("forced shutdown: %v\n", err)
 	}
 }
