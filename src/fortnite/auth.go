@@ -603,8 +603,23 @@ func HandlerDisconnectFAccount(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		err := database.DeleteGameAccountByID(db, uuid.MustParse(req.Id))
+		accountID, err := uuid.Parse(req.Id)
 		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid account ID format"})
+			return
+		}
+
+		// Only the owner (or an admin) may disconnect an account.
+		gameAccount, err := database.GetGameAccount(db, accountID)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "Game account not found"})
+			return
+		}
+		if !authorizeAccountAccess(c, gameAccount) {
+			return
+		}
+
+		if err := database.DeleteGameAccountByID(db, accountID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not disconnect Fortnite account", "details": err.Error()})
 			return
 		}
