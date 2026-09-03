@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -460,8 +461,8 @@ func HandlerSendGift(db *sql.DB) gin.HandlerFunc {
 
 func sendGiftRequest(db *sql.DB, accountIDStr string, accountID uuid.UUID, receiverUserID string, giftItem string, giftPrice int, senderName *string, personalMessage string) (error, error) {
 	// Epic rejects personal messages longer than 100 characters.
-	if len(personalMessage) > 100 {
-		personalMessage = personalMessage[:100]
+	if utf8.RuneCountInString(personalMessage) > 100 {
+		personalMessage = string([]rune(personalMessage)[:100])
 	}
 
 	payload := map[string]interface{}{

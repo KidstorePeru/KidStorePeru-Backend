@@ -128,13 +128,12 @@ func HandlerFinishConnectFortniteAccount(db *sql.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not Authorize user in step 1", "details": err.Error()})
 			return
 		}
+		defer respToken.Body.Close()
 
 		if respToken.StatusCode != http.StatusOK {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid device code or expired", "status_code": respToken.StatusCode})
 			return
 		}
-
-		defer respToken.Body.Close()
 
 		var tokenResultStep1 types.LoginResultResponse
 		if err := json.NewDecoder(respToken.Body).Decode(&tokenResultStep1); err != nil {
