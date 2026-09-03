@@ -10,7 +10,9 @@ import (
 	"github.com/google/uuid"
 )
 
-var secretKey = []byte("secret-key")
+// secretKey is populated from the SECRET_KEY environment variable in config.go's
+// init(). It is used to sign and verify all JWTs.
+var secretKey []byte
 
 func CreateToken(username string, userid string) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256,

@@ -3,34 +3,22 @@ package main
 import (
 	"KidStoreBotBE/src/fortnite"
 	page "KidStoreBotBE/src/page"
-	"KidStoreBotBE/src/types"
 	"KidStoreBotBE/src/utils"
 	"database/sql"
 	"fmt"
-	"log"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/joho/godotenv"
-	"github.com/kelseyhightower/envconfig"
 	_ "github.com/lib/pq"
 )
 
 // ============================ MAIN ============================
 func main() {
-	if _, err := os.Stat(".env"); err == nil {
-		if err := godotenv.Load(); err != nil {
-			log.Fatalf("Error loading .env file: %v", err)
-		}
-	}
-
-	var cfg types.EnvConfigType
-	if err := envconfig.Process("", &cfg); err != nil {
-		log.Fatalf("Error processing environment variables: %v", err)
-	}
+	// Configuration (including .env loading) is processed once in
+	// utils' package init(). See src/utils/config.go.
+	cfg := utils.Config
 
 	psqlInfo := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
 		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.DBName)
@@ -51,11 +39,11 @@ func main() {
 	router.Use(gin.Recovery())
 
 	allowedOrigins := map[string]bool{
-		"*":                               true,
-		"http://localhost:5173":           true,
-		"http://localhost:3000":           true,
+		"*":                                true,
+		"http://localhost:5173":            true,
+		"http://localhost:3000":            true,
 		"https://your-production-site.com": true,
-		"chrome-extension://gmmkjpcadciiokjpikmkkmapphbmdjok":         true,
+		"chrome-extension://gmmkjpcadciiokjpikmkkmapphbmdjok":           true,
 		"https://kidstoreperu-frontend-react-production.up.railway.app": true,
 	}
 

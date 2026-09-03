@@ -9,26 +9,37 @@ import (
 	"github.com/kelseyhightower/envconfig"
 )
 
-// Global constant-like variable (readonly in practice)
-var EpicClient string
-var EpicSecret string
-var FetchPavos bool
+// Config holds the fully-processed application configuration. It is populated
+// once during package initialization and is the single source of truth for
+// environment-derived settings.
+var Config types.EnvConfigType
+
+// Convenience globals kept for existing call sites.
+var (
+	EpicClient string
+	EpicSecret string
+	FetchPavos bool
+)
 
 func init() {
-	//first check if the file exists and then load it
+	// Load .env only when the file is present (local dev). In production the
+	// hosting platform injects the variables directly.
 	if _, err := os.Stat(".env"); err == nil {
 		if err := godotenv.Load(); err != nil {
 			log.Fatalf("Error loading .env file: %v", err)
 		}
 	}
-	// Process environment variables into Config struct
-	var cfg types.EnvConfigType
-	if err := envconfig.Process("", &cfg); err != nil {
+
+	if err := envconfig.Process("", &Config); err != nil {
 		log.Fatalf("Error processing environment variables: %v", err)
 	}
 
-	// Set the global variable
-	EpicClient = cfg.Epic_client
-	EpicSecret = cfg.Epic_secret
-	FetchPavos = cfg.Fetch_pavos
+	if Config.SecretKey == "" {
+		log.Fatal("SECRET_KEY environment variable is required but not set")
+	}
+	secretKey = []byte(Config.SecretKey)
+
+	EpicClient = Config.Epic_client
+	EpicSecret = Config.Epic_secret
+	FetchPavos = Config.Fetch_pavos
 }
