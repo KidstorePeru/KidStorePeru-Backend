@@ -44,9 +44,10 @@ pavos_updater/          standalone CLI to refresh pavos for every account
 
 ## Deployment
 
-A multi-stage [`Dockerfile`](Dockerfile) builds a minimal static image. Railway
-(and any Docker host) picks it up automatically. Set the environment variables
-listed above in the service settings.
+Deployed on Railway, built with Railpack (auto-detects the Go version from
+`go.mod`). Set the environment variables listed above in the service settings.
+For the database, prefer the private network host (`postgres.railway.internal`,
+port `5432`) over the public proxy.
 
 ## API
 
