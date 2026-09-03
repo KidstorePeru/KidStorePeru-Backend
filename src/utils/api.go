@@ -1,12 +1,11 @@
 package utils
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 func AuthMiddleware() gin.HandlerFunc {
@@ -37,20 +36,22 @@ func AuthMiddleware() gin.HandlerFunc {
 		})
 
 		if err != nil || !token.Valid {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Invalid token", "details": err.Error()})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Invalid token"})
 			return
 		}
 
 		// Extract userID from claims
 		claims, ok := token.Claims.(jwt.MapClaims)
-		if !ok || claims["user_id"] == nil {
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Invalid token claims"})
+			return
+		}
+		userID, ok := claims["user_id"].(string)
+		if !ok || userID == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Invalid token claims"})
 			return
 		}
 
-		userID := claims["user_id"].(string)
-		fmt.Println("userID", userID)
-		// Save userID into context
 		c.Set("userID", userID)
 
 		// Continue to handler
@@ -120,18 +121,4 @@ func IsTokenAdmin(c *gin.Context) bool {
 		return false
 	}
 	return VerifyAdminToken(tokenString) == nil
-}
-
-func ProtectedHandler(c *gin.Context) {
-	// This handler is protected by the AuthMiddleware
-	userID, exists := c.Get("userID")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "User ID not found in context"})
-		return
-	}
-
-	// You can use userID for further processing
-	fmt.Println("Protected handler accessed by user:", userID)
-
-	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Welcome to the protected area", "userID": userID})
 }
