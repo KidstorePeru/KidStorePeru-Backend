@@ -37,40 +37,56 @@ func HandlerLoginForm(db *sql.DB, adminUsername string) gin.HandlerFunc {
 		}
 		dbUserIDStr, err := utils.ConvertUUIDToString(dbuser.ID)
 		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Invalid user ID"})
 			return
 		}
-		if dbuser.Password == form.Password {
-			//todo pick admin username from somewhre else. secret source.
-			if dbuser.Username == adminUsername {
 
-				tokenString, err := utils.CreateAdminToken(dbuser.Username, dbUserIDStr)
-				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not create token", "details": err.Error()})
-					return
-				}
-				// Update pavos for admin user
-				if utils.FetchPavos {
-					fortnite.UpdatePavosForUser(db, dbuser.ID, true)
-				}
-				c.JSON(http.StatusOK, gin.H{"success": true, "token": tokenString})
-				return
-			} else {
-				tokenString, err := utils.CreateToken(dbuser.Username, dbUserIDStr)
-				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not create token", "details": err.Error()})
-					return
-				}
-				if utils.FetchPavos {
-					fortnite.UpdatePavosForUser(db, dbuser.ID, false)
-				}
-				c.JSON(http.StatusOK, gin.H{"success": true, "token": tokenString})
-
-				return
-			}
+		if !passwordMatches(db, dbuser, form.Password) {
+			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Invalid Password"})
+			return
 		}
-		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Invalid Password"})
 
+		isAdmin := dbuser.Username == adminUsername
+
+		var tokenString string
+		if isAdmin {
+			tokenString, err = utils.CreateAdminToken(dbuser.Username, dbUserIDStr)
+		} else {
+			tokenString, err = utils.CreateToken(dbuser.Username, dbUserIDStr)
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not create token", "details": err.Error()})
+			return
+		}
+
+		if utils.FetchPavos {
+			fortnite.UpdatePavosForUser(db, dbuser.ID, isAdmin)
+		}
+
+		c.JSON(http.StatusOK, gin.H{"success": true, "token": tokenString})
 	}
+}
+
+// passwordMatches verifies a login attempt against the stored password. Stored
+// passwords are bcrypt hashes; legacy plaintext passwords are still accepted
+// and are transparently re-hashed on the next successful login.
+func passwordMatches(db *sql.DB, dbuser types.User, attempt string) bool {
+	if utils.IsHashed(dbuser.Password) {
+		return utils.CheckPassword(dbuser.Password, attempt)
+	}
+
+	if dbuser.Password != attempt {
+		return false
+	}
+
+	// Legacy plaintext match: upgrade the stored value to a bcrypt hash.
+	if hashed, err := utils.HashPassword(attempt); err == nil {
+		dbuser.Password = hashed
+		if err := database.UpdateUser(db, dbuser); err != nil {
+			fmt.Printf("Warning: could not migrate password hash for user %s: %v\n", dbuser.ID, err)
+		}
+	}
+	return true
 }
 
 // ============================ USER HANDLERS ============================
@@ -89,13 +105,23 @@ func HandlerAddNewUser(db *sql.DB) gin.HandlerFunc {
 		if newUser.ID == uuid.Nil {
 			newUser.ID = uuid.New()
 		}
+		if newUser.Password == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "password is required"})
+			return
+		}
+		hashed, err := utils.HashPassword(newUser.Password)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not hash password"})
+			return
+		}
+		newUser.Password = hashed
 		newUser.CreatedAt = time.Now()
 		newUser.UpdatedAt = time.Now()
 		if err := database.AddUser(db, newUser); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not add new user", "details": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "User added successfully"})
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": "User added successfully"})
 	}
 }
 
@@ -190,6 +216,19 @@ func HandlerUpdateUser(db *sql.DB) gin.HandlerFunc {
 			if !allowedColumns[key] {
 				c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": fmt.Sprintf("field %q cannot be updated", key)})
 				return
+			}
+			if key == "password" {
+				plain, ok := value.(string)
+				if !ok || plain == "" {
+					c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "password must be a non-empty string"})
+					return
+				}
+				hashed, err := utils.HashPassword(plain)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not hash password"})
+					return
+				}
+				value = hashed
 			}
 			setParts = append(setParts, fmt.Sprintf("%s = $%d", key, argIdx))
 			args = append(args, value)
