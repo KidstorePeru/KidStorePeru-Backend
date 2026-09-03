@@ -291,6 +291,11 @@ func HandlerSendGift(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		// Serialize gifts for this account so concurrent requests can't both
+		// pass the slot check below.
+		unlock := lockAccount(AccountId)
+		defer unlock()
+
 		remainingGifts, err := database.GetRemainingGifts(db, AccountId)
 		fmt.Printf("Remaining gifts for account %s: %d\n", AccountId, remainingGifts)
 		if err != nil {
@@ -391,7 +396,14 @@ func HandlerSendGift(db *sql.DB) gin.HandlerFunc {
 			fmt.Printf("PaVos updated manually after automatic update failed\n")
 		}
 
-		err = database.UpdateRemainingGifts(db, AccountId, remainingGifts-1)
+		// Recompute the cached counter from the 24h transaction history rather
+		// than blindly decrementing, so it stays consistent with the source of
+		// truth even if a slot expired mid-request.
+		newRemaining, calcErr := database.CalculateRemainingGifts(db, AccountId)
+		if calcErr != nil {
+			newRemaining = remainingGifts - 1
+		}
+		err = database.UpdateRemainingGifts(db, AccountId, newRemaining)
 		if err != nil {
 			fmt.Printf("Error updating remaining gifts: %v\n", err)
 			c.JSON(http.StatusAccepted, gin.H{
