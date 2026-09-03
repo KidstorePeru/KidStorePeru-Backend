@@ -125,8 +125,8 @@ func HandlerFinishConnectFortniteAccount(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		if respToken.StatusCode == 400 || respToken.StatusCode != 200 {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid device code or expired", "details": respToken.Body, "status_code": respToken.StatusCode})
+		if respToken.StatusCode != http.StatusOK {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid device code or expired", "status_code": respToken.StatusCode})
 			return
 		}
 
@@ -406,11 +406,8 @@ func RefreshAccessToken(refreshToken string, db *sql.DB) (types.LoginResultRespo
 	}
 
 	if respToken.StatusCode != 200 {
-		return types.LoginResultResponse{}, fmt.Errorf("unexpected status code: %d, response: %s", respToken.StatusCode, respToken.Body)
+		return types.LoginResultResponse{}, fmt.Errorf("unexpected status code: %d", respToken.StatusCode)
 	}
-
-	//print response
-	fmt.Println("Token result:", tokenResult)
 
 	//UPDATE DB
 	AccountId, err := uuid.Parse(tokenResult.AccountId)
@@ -450,8 +447,6 @@ func ExecuteOperationWithRefresh(request *http.Request, db *sql.DB, GameAccountI
 
 	// Set appropriate header
 	if source == "pavos" {
-		fmt.Printf("Using Pavo source for account %s\n and access token %s", GameAccountID, GameAccount.AccessToken)
-
 		// Set headers exactly as they work in Edge browser
 		request.Header.Set("User-Agent", "KidStore/1.0.0")
 		request.Header.Set("Accept", "*/*")
@@ -460,7 +455,6 @@ func ExecuteOperationWithRefresh(request *http.Request, db *sql.DB, GameAccountI
 
 		request.Header.Set("Cookie", "EPIC_BEARER_TOKEN=2cac1ce0234b433da4d63104412b647f")
 	} else {
-		fmt.Printf("Using standard source for account %s\n and access token %s", GameAccountID, GameAccount.AccessToken)
 		request.Header.Set("Authorization", "Bearer "+GameAccount.AccessToken)
 	}
 
@@ -480,10 +474,8 @@ func ExecuteOperationWithRefresh(request *http.Request, db *sql.DB, GameAccountI
 			fmt.Printf("Failed to read response body for account %s: %v\n", GameAccountID, err)
 			return nil, fmt.Errorf("could not read response body: %w", err)
 		}
-		//do not print response body if source is gift
-		if source != "gift" {
-			fmt.Printf("Response Body: %s\n", string(bodyBytes))
-		}
+		// Note: the response body may contain access/refresh tokens, so it is
+		// deliberately not logged here.
 		resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes)) // Reset body for further reads
 	} else {
 		fmt.Printf("Response Body is nil for account %s\n", GameAccountID)
@@ -551,7 +543,7 @@ func ExecuteOperationWithRefresh(request *http.Request, db *sql.DB, GameAccountI
 			fmt.Printf("Could not get device secrets for account %s: %v\n", GameAccountStr, err)
 			return nil, fmt.Errorf("could not get device secrets: %w", err)
 		}
-		fmt.Printf("Device Secrets for %s: %+v\n", GameAccountStr, deviceSecrets)
+		fmt.Printf("Retrieved device secrets for account %s\n", GameAccountStr)
 
 		newTokens, err = DeviceAuthIdGrant(db, deviceSecrets)
 		if err != nil {

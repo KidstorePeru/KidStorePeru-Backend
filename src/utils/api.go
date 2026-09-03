@@ -33,7 +33,6 @@ func AuthMiddleware() gin.HandlerFunc {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, jwt.ErrSignatureInvalid
 			}
-			fmt.Println("secretKey", secretKey)
 			return secretKey, nil
 		})
 
