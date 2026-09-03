@@ -178,19 +178,27 @@ func HandlerUpdateUser(db *sql.DB) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "no fields to update"})
 			return
 		}
+
+		// Column names cannot be parameterized, so restrict them to a fixed
+		// allowlist to prevent SQL injection via the JSON keys.
+		allowedColumns := map[string]bool{"username": true, "email": true, "password": true}
+
 		setParts := []string{}
 		args := []interface{}{}
 		argIdx := 1
 		for key, value := range updates {
+			if !allowedColumns[key] {
+				c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": fmt.Sprintf("field %q cannot be updated", key)})
+				return
+			}
 			setParts = append(setParts, fmt.Sprintf("%s = $%d", key, argIdx))
 			args = append(args, value)
 			argIdx++
 		}
 		setParts = append(setParts, fmt.Sprintf("updated_at = $%d", argIdx))
 		args = append(args, time.Now())
-		query := fmt.Sprintf(`UPDATE users SET %s WHERE id = $%d`, strings.Join(setParts, ", "), argIdx+1)
-		//print query
-		fmt.Println("Executing query:", query)
+		argIdx++
+		query := fmt.Sprintf(`UPDATE users SET %s WHERE id = $%d`, strings.Join(setParts, ", "), argIdx)
 		args = append(args, id)
 		_, err = db.Exec(query, args...)
 		if err != nil {
@@ -267,14 +275,14 @@ func HandlerGetGameAccountsByOwner(db *sql.DB) gin.HandlerFunc {
 			realTimeRemainingGifts := remainingGiftsMap[account.ID]
 
 			// Fall back to stored value if batch calculation failed
-		// Use minimum between calculated and stored (respects manual adjustments)
-		finalRemainingGifts := realTimeRemainingGifts
-		if account.RemainingGifts < realTimeRemainingGifts {
-			finalRemainingGifts = account.RemainingGifts
-		}
-		if finalRemainingGifts < 0 {
-			finalRemainingGifts = 0
-		}
+			// Use minimum between calculated and stored (respects manual adjustments)
+			finalRemainingGifts := realTimeRemainingGifts
+			if account.RemainingGifts < realTimeRemainingGifts {
+				finalRemainingGifts = account.RemainingGifts
+			}
+			if finalRemainingGifts < 0 {
+				finalRemainingGifts = 0
+			}
 
 			resultAccounts = append(resultAccounts, types.SimplifiedAccount{
 				ID:             accountIDStr,
@@ -406,14 +414,14 @@ func HandlerGetAllGameAccounts(db *sql.DB) gin.HandlerFunc {
 			realTimeRemainingGifts := remainingGiftsMap[account.ID]
 
 			// Fall back to stored value if batch calculation failed
-		// Use minimum between calculated and stored (respects manual adjustments)
-		finalRemainingGifts2 := realTimeRemainingGifts
-		if account.RemainingGifts < realTimeRemainingGifts {
-			finalRemainingGifts2 = account.RemainingGifts
-		}
-		if finalRemainingGifts2 < 0 {
-			finalRemainingGifts2 = 0
-		}
+			// Use minimum between calculated and stored (respects manual adjustments)
+			finalRemainingGifts2 := realTimeRemainingGifts
+			if account.RemainingGifts < realTimeRemainingGifts {
+				finalRemainingGifts2 = account.RemainingGifts
+			}
+			if finalRemainingGifts2 < 0 {
+				finalRemainingGifts2 = 0
+			}
 
 			resultAccounts = append(resultAccounts, types.SimplifiedAccount{
 				ID:             accountIDStr,
