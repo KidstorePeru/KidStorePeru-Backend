@@ -322,7 +322,7 @@ func HandlerSendGift(db *sql.DB) gin.HandlerFunc {
 		req.AccountID = strings.ReplaceAll(req.AccountID, "-", "")
 		req.ReceiverID = strings.ReplaceAll(req.ReceiverID, "-", "")
 
-		err, err2 := sendGiftRequest(db, req.AccountID, AccountId, req.ReceiverID, req.GiftId, req.GiftPrice, &req.SenderName)
+		err, err2 := sendGiftRequest(db, req.AccountID, AccountId, req.ReceiverID, req.GiftId, req.GiftPrice, &req.SenderName, req.Message)
 		if err != nil {
 			fmt.Printf("Error sending gift request: %v\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -458,7 +458,12 @@ func HandlerSendGift(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func sendGiftRequest(db *sql.DB, accountIDStr string, accountID uuid.UUID, receiverUserID string, giftItem string, giftPrice int, senderName *string) (error, error) {
+func sendGiftRequest(db *sql.DB, accountIDStr string, accountID uuid.UUID, receiverUserID string, giftItem string, giftPrice int, senderName *string, personalMessage string) (error, error) {
+	// Epic rejects personal messages longer than 100 characters.
+	if len(personalMessage) > 100 {
+		personalMessage = personalMessage[:100]
+	}
+
 	payload := map[string]interface{}{
 		"offerId":            giftItem,
 		"currency":           "MtxCurrency",
@@ -467,7 +472,7 @@ func sendGiftRequest(db *sql.DB, accountIDStr string, accountID uuid.UUID, recei
 		"gameContext":        "Frontend.CatabaScreen",
 		"receiverAccountIds": []string{receiverUserID},
 		"giftWrapTemplateId": "",
-		"personalMessage":    "",
+		"personalMessage":    personalMessage,
 	}
 
 	jsonPayload, err := json.Marshal(payload)
