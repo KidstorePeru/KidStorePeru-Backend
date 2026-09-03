@@ -104,17 +104,26 @@ func HandlerSearchOnlineFortniteAccount(db *sql.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Invalid friend created date", "details": err.Error()})
 			return
 		}
-		if time.Since(friendCreated) > 48*time.Hour {
+		friendCreatedStr := friendCreated.Format("02/01/2006 15:04") + " GMT-5"
 
-			//parse created to dd/mm/yyyy, hh:mm in gtm -5
-			friendCreatedStr := friendCreated.Format("02/01/2006 15:04")
-			friendCreatedStr = friendCreatedStr + " GMT-5"
+		if time.Since(friendCreated) > 48*time.Hour {
 			c.JSON(http.StatusOK, gin.H{"success": true, "giftable": true, "friend": true, "user": true, "accountId": tokenResult.AccountId, "displayName": tokenResult.DisplayName, "created": friendCreatedStr})
 			return
 		}
 
+		// Friend for less than 48h — Epic won't allow a gift yet.
+		hoursLeft := int(48 - time.Since(friendCreated).Hours())
+		c.JSON(http.StatusOK, gin.H{
+			"success":     true,
+			"giftable":    false,
+			"friend":      true,
+			"user":        true,
+			"accountId":   tokenResult.AccountId,
+			"displayName": tokenResult.DisplayName,
+			"created":     friendCreatedStr,
+			"error":       fmt.Sprintf("Deben ser amigos por 48 horas antes de poder enviar un regalo (faltan ~%d h)", hoursLeft),
+		})
 	}
-
 }
 
 // TODO
