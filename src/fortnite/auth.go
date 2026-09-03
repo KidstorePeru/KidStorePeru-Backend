@@ -28,7 +28,8 @@ func HandlerConnectFortniteAccount(db *sql.DB) gin.HandlerFunc {
 
 		_, _, err := utils.GetUserIdFromToken(c)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": err})
+			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": err.Error()})
+			return
 		}
 
 		client := &http.Client{Timeout: 10 * time.Second}
@@ -101,7 +102,8 @@ func HandlerFinishConnectFortniteAccount(db *sql.DB) gin.HandlerFunc {
 
 		_, userIdUUID, err := utils.GetUserIdFromToken(c)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": err})
+			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": err.Error()})
+			return
 		}
 
 		var req types.DeviceCodeRequest
@@ -307,7 +309,8 @@ func HandlerAuthorizationCodeLogin(db *sql.DB) gin.HandlerFunc {
 
 		_, userIdUUID, err := utils.GetUserIdFromToken(c)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": err})
+			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": err.Error()})
+			return
 		}
 
 		var req types.AuthorizationCode

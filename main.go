@@ -74,7 +74,8 @@ func main() {
 		}
 		_, dUserID, err := utils.GetUserIdFromToken(c)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": err})
+			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": err.Error()})
+			return
 		}
 		IsTokenAdmin := utils.IsTokenAdmin(c)
 		if IsTokenAdmin {
