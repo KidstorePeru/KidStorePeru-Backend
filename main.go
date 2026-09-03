@@ -115,5 +115,7 @@ func main() {
 	go fortnite.StartFriendRequestHandler(db, cfg.AcceptFriendsInMinutes)
 	go fortnite.UpdateRemainingGiftsInAccounts(db)
 
-	router.Run(":8080")
+	if err := router.Run(":" + cfg.Port_HTTP); err != nil {
+		panic(err)
+	}
 }
