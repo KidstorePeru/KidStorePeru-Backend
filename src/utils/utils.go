@@ -23,8 +23,7 @@ func CreateToken(username string, userid string) (string, error) {
 		})
 	tokenString, err := token.SignedString(secretKey)
 	if err != nil {
-		fmt.Println("Error signing token:", err)
-		return "", nil
+		return "", fmt.Errorf("could not sign token: %w", err)
 	}
 	return tokenString, nil
 }
@@ -39,7 +38,7 @@ func CreateAdminToken(username string, userid string) (string, error) {
 		})
 	tokenString, err := token.SignedString(secretKey)
 	if err != nil {
-		return "", nil
+		return "", fmt.Errorf("could not sign admin token: %w", err)
 	}
 	return tokenString, nil
 }
@@ -64,6 +63,9 @@ func VerifyAdminToken(tokenString string) error {
 
 func VerifyToken(tokenString string) error {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
 		return secretKey, nil
 	})
 	if err != nil {
