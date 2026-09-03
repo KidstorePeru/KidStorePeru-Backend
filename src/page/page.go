@@ -8,7 +8,6 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -147,7 +146,7 @@ func HandlerRemoveUsers(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 		//block deletion of admin account
-		adminUser, err := database.GetUserByUsername(db, os.Getenv("ADMIN_USER"))
+		adminUser, err := database.GetUserByUsername(db, utils.Config.AdminUser)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not fetch admin user", "details": err.Error()})
 			return

@@ -17,6 +17,8 @@ import (
 
 // ============================ MAIN ============================
 func main() {
+	gin.SetMode(gin.ReleaseMode)
+
 	// Configuration (including .env loading) is processed once in
 	// utils' package init(). See src/utils/config.go.
 	cfg := utils.Config
@@ -35,9 +37,7 @@ func main() {
 		panic(err)
 	}
 
-	router := gin.Default()
-	router.Use(gin.Logger())
-	router.Use(gin.Recovery())
+	router := gin.Default() // includes Logger + Recovery
 
 	allowedOrigins := make(map[string]bool, len(cfg.AllowedOrigins))
 	for _, origin := range cfg.AllowedOrigins {
@@ -58,10 +58,8 @@ func main() {
 	}))
 
 	router.Use(utils.GenericMiddleware)
-	gin.SetMode(gin.ReleaseMode)
 
 	authorized := router.Group("/", utils.AuthMiddleware())
-	authorized.Use(utils.GenericMiddleware)
 
 	router.GET("/", func(c *gin.Context) {
 		c.String(http.StatusOK, "Welcome Gin Server")
@@ -113,7 +111,7 @@ func main() {
 	authorized.GET("/transactions", page.HandlerGetTransactionsByAccount(db))
 	authorized.GET("/alltransactions", page.HandlerGetTransactionsAdmin(db))
 
-	go fortnite.StartFriendRequestHandler(db, cfg.AcceptFriendsInMinutes)
+	go fortnite.StartFriendRequestHandler(db, cfg.AcceptFriendsInSeconds)
 	go fortnite.UpdateRemainingGiftsInAccounts(db)
 
 	if err := router.Run(":" + cfg.Port_HTTP); err != nil {

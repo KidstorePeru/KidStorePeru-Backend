@@ -16,9 +16,7 @@ type EnvConfigType struct {
 	SSLMode                string `envconfig:"DB_SSLMODE" default:"disable"`
 	SecretKey              string `envconfig:"SECRET_KEY"`
 	AdminUser              string `envconfig:"ADMIN_USER"`
-	AdminPass              string `envconfig:"ADMIN_PASS"`
-	AcceptFriendsInMinutes int    `envconfig:"ACCEPT_FRIENDS_IN_SECONDS" default:"5"`
-	RefreshTokensInMinutes int    `envconfig:"REFRESH_TOKENS_IN_MINUTES" default:"13"`
+	AcceptFriendsInSeconds int    `envconfig:"ACCEPT_FRIENDS_IN_SECONDS" default:"5"`
 	Epic_client            string `envconfig:"EPIC_CLIENT" default:""`
 	Epic_secret            string `envconfig:"EPIC_SECRET" default:""`
 	Fetch_pavos            bool   `envconfig:"FETCH_PAVOS" default:"true"`
