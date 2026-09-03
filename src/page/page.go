@@ -279,60 +279,56 @@ func HandlerGetGameAccountsByOwner(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Extract account IDs for batch processing
-		accountIDs := make([]uuid.UUID, len(gameAccounts))
-		for i, account := range gameAccounts {
-			accountIDs[i] = account.ID
-		}
-
-		// Batch get gift slot status for all accounts at once
-		giftSlotStatusMap, err := database.BatchGetGiftSlotStatus(db, accountIDs)
-		if err != nil {
-			fmt.Printf("Error batch getting gift slot status: %v\n", err)
-			// Continue without gift slot status if there's an error
-			giftSlotStatusMap = make(map[uuid.UUID]map[string]interface{})
-		}
-
-		// Batch calculate remaining gifts for all accounts at once
-		remainingGiftsMap, err := database.BatchCalculateRemainingGifts(db, accountIDs)
-		if err != nil {
-			fmt.Printf("Error batch calculating remaining gifts: %v\n", err)
-			// Fall back to stored values if calculation fails
-			remainingGiftsMap = make(map[uuid.UUID]int)
-		}
-
-		var resultAccounts []types.SimplifiedAccount = []types.SimplifiedAccount{}
-		for _, account := range gameAccounts {
-			accountIDStr, err := utils.ConvertUUIDToString(account.ID)
-			if err != nil {
-				return
-			}
-
-			// Get pre-calculated values from batch operations
-			giftSlotStatus := giftSlotStatusMap[account.ID]
-			realTimeRemainingGifts := remainingGiftsMap[account.ID]
-
-			// Fall back to stored value if batch calculation failed
-			// Use minimum between calculated and stored (respects manual adjustments)
-			finalRemainingGifts := realTimeRemainingGifts
-			if account.RemainingGifts < realTimeRemainingGifts {
-				finalRemainingGifts = account.RemainingGifts
-			}
-			if finalRemainingGifts < 0 {
-				finalRemainingGifts = 0
-			}
-
-			resultAccounts = append(resultAccounts, types.SimplifiedAccount{
-				ID:             accountIDStr,
-				DisplayName:    account.DisplayName,
-				Pavos:          account.PaVos,
-				RemainingGifts: finalRemainingGifts,
-				GiftSlotStatus: giftSlotStatus,
-			})
-		}
-
-		c.JSON(http.StatusOK, gin.H{"success": true, "gameAccounts": resultAccounts})
+		c.JSON(http.StatusOK, gin.H{"success": true, "gameAccounts": buildSimplifiedAccounts(db, gameAccounts)})
 	}
+}
+
+// buildSimplifiedAccounts enriches raw game accounts with batch-computed gift
+// slot status and remaining-gift counts for the API response.
+func buildSimplifiedAccounts(db *sql.DB, gameAccounts []types.GameAccount) []types.SimplifiedAccount {
+	accountIDs := make([]uuid.UUID, len(gameAccounts))
+	for i, account := range gameAccounts {
+		accountIDs[i] = account.ID
+	}
+
+	giftSlotStatusMap, err := database.BatchGetGiftSlotStatus(db, accountIDs)
+	if err != nil {
+		fmt.Printf("Error batch getting gift slot status: %v\n", err)
+		giftSlotStatusMap = make(map[uuid.UUID]map[string]interface{})
+	}
+
+	remainingGiftsMap, err := database.BatchCalculateRemainingGifts(db, accountIDs)
+	if err != nil {
+		fmt.Printf("Error batch calculating remaining gifts: %v\n", err)
+		remainingGiftsMap = make(map[uuid.UUID]int)
+	}
+
+	result := make([]types.SimplifiedAccount, 0, len(gameAccounts))
+	for _, account := range gameAccounts {
+		accountIDStr, err := utils.ConvertUUIDToString(account.ID)
+		if err != nil {
+			continue
+		}
+
+		// Use the minimum of the calculated and stored counts so manual
+		// downward adjustments are respected; never go negative.
+		remaining := remainingGiftsMap[account.ID]
+		if account.RemainingGifts < remaining {
+			remaining = account.RemainingGifts
+		}
+		if remaining < 0 {
+			remaining = 0
+		}
+
+		result = append(result, types.SimplifiedAccount{
+			ID:             accountIDStr,
+			DisplayName:    account.DisplayName,
+			Pavos:          account.PaVos,
+			RemainingGifts: remaining,
+			GiftSlotStatus: giftSlotStatusMap[account.ID],
+		})
+	}
+	return result
 }
 
 func HandlerGetTransactionsAdmin(db *sql.DB) gin.HandlerFunc {
@@ -400,82 +396,12 @@ func HandlerGetAllGameAccounts(db *sql.DB) gin.HandlerFunc {
 		if result != 200 {
 			return
 		}
-		gameAccounts, err := GetAllGameAccounts(db)
+		gameAccounts, err := database.GetAllGameAccounts(db)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not fetch game accounts", "details": err.Error()})
 			return
 		}
 
-		// Extract account IDs for batch processing
-		accountIDs := make([]uuid.UUID, len(gameAccounts))
-		for i, account := range gameAccounts {
-			accountIDs[i] = account.ID
-		}
-
-		// Batch get gift slot status for all accounts at once
-		giftSlotStatusMap, err := database.BatchGetGiftSlotStatus(db, accountIDs)
-		if err != nil {
-			fmt.Printf("Error batch getting gift slot status: %v\n", err)
-			// Continue without gift slot status if there's an error
-			giftSlotStatusMap = make(map[uuid.UUID]map[string]interface{})
-		}
-
-		// Batch calculate remaining gifts for all accounts at once
-		remainingGiftsMap, err := database.BatchCalculateRemainingGifts(db, accountIDs)
-		if err != nil {
-			fmt.Printf("Error batch calculating remaining gifts: %v\n", err)
-			// Fall back to stored values if calculation fails
-			remainingGiftsMap = make(map[uuid.UUID]int)
-		}
-
-		var resultAccounts []types.SimplifiedAccount = []types.SimplifiedAccount{}
-		for _, account := range gameAccounts {
-			accountIDStr, err := utils.ConvertUUIDToString(account.ID)
-			if err != nil {
-				return
-			}
-
-			// Get pre-calculated values from batch operations
-			giftSlotStatus := giftSlotStatusMap[account.ID]
-			realTimeRemainingGifts := remainingGiftsMap[account.ID]
-
-			// Fall back to stored value if batch calculation failed
-			// Use minimum between calculated and stored (respects manual adjustments)
-			finalRemainingGifts2 := realTimeRemainingGifts
-			if account.RemainingGifts < realTimeRemainingGifts {
-				finalRemainingGifts2 = account.RemainingGifts
-			}
-			if finalRemainingGifts2 < 0 {
-				finalRemainingGifts2 = 0
-			}
-
-			resultAccounts = append(resultAccounts, types.SimplifiedAccount{
-				ID:             accountIDStr,
-				DisplayName:    account.DisplayName,
-				Pavos:          account.PaVos,
-				RemainingGifts: finalRemainingGifts2,
-				GiftSlotStatus: giftSlotStatus,
-			})
-		}
-
-		c.JSON(http.StatusOK, gin.H{"success": true, "gameAccounts": resultAccounts})
+		c.JSON(http.StatusOK, gin.H{"success": true, "gameAccounts": buildSimplifiedAccounts(db, gameAccounts)})
 	}
-}
-
-func GetAllGameAccounts(db *sql.DB) ([]types.GameAccount, error) {
-	var accounts []types.GameAccount
-	rows, err := db.Query(`SELECT id, display_name, remaining_gifts, pavos, access_token, access_token_exp, access_token_exp_date, refresh_token, refresh_token_exp, refresh_token_exp_date FROM game_accounts`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var account types.GameAccount
-		if err := rows.Scan(&account.ID, &account.DisplayName, &account.RemainingGifts, &account.PaVos, &account.AccessToken, &account.AccessTokenExp, &account.AccessTokenExpDate, &account.RefreshToken, &account.RefreshTokenExp, &account.RefreshTokenExpDate); err != nil {
-			return nil, err
-		}
-		accounts = append(accounts, account)
-	}
-	return accounts, nil
 }
