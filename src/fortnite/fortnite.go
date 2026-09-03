@@ -281,6 +281,16 @@ func HandlerSendGift(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		// Only the account owner (or an admin) may gift from this account.
+		gameAccount, err := database.GetGameAccount(db, AccountId)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "Game account not found"})
+			return
+		}
+		if !authorizeAccountAccess(c, gameAccount) {
+			return
+		}
+
 		remainingGifts, err := database.GetRemainingGifts(db, AccountId)
 		fmt.Printf("Remaining gifts for account %s: %d\n", AccountId, remainingGifts)
 		if err != nil {

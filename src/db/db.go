@@ -201,7 +201,7 @@ func GetAllGameAccounts(db *sql.DB) ([]types.GameAccount, error) {
 
 func GetGameAccount(db *sql.DB, id uuid.UUID) (types.GameAccount, error) {
 	var account types.GameAccount
-	err := db.QueryRow(`SELECT id, display_name, remaining_gifts, pavos, access_token, access_token_exp, access_token_exp_date, refresh_token, refresh_token_exp, refresh_token_exp_date FROM game_accounts WHERE id = $1`, id).Scan(&account.ID, &account.DisplayName, &account.RemainingGifts, &account.PaVos, &account.AccessToken, &account.AccessTokenExp, &account.AccessTokenExpDate, &account.RefreshToken, &account.RefreshTokenExp, &account.RefreshTokenExpDate)
+	err := db.QueryRow(`SELECT id, display_name, remaining_gifts, pavos, access_token, access_token_exp, access_token_exp_date, refresh_token, refresh_token_exp, refresh_token_exp_date, COALESCE(owner_user_id, '00000000-0000-0000-0000-000000000000') FROM game_accounts WHERE id = $1`, id).Scan(&account.ID, &account.DisplayName, &account.RemainingGifts, &account.PaVos, &account.AccessToken, &account.AccessTokenExp, &account.AccessTokenExpDate, &account.RefreshToken, &account.RefreshTokenExp, &account.RefreshTokenExpDate, &account.OwnerUserID)
 	if err != nil {
 		fmt.Printf("Error getting game account: %v", err)
 		return types.GameAccount{}, err
