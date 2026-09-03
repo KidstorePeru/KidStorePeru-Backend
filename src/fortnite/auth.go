@@ -32,7 +32,7 @@ func HandlerConnectFortniteAccount(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		client := &http.Client{Timeout: 10 * time.Second}
+		client := epicHTTPClient
 		authHeader := "basic " + base64.StdEncoding.EncodeToString([]byte(utils.EpicClient+":"+utils.EpicSecret))
 
 		// Step 1: Get client credentials token
@@ -112,7 +112,7 @@ func HandlerFinishConnectFortniteAccount(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		client := &http.Client{Timeout: 10 * time.Second}
+		client := epicHTTPClient
 		authHeader := "basic " + base64.StdEncoding.EncodeToString([]byte(utils.EpicClient+":"+utils.EpicSecret))
 
 		reqToken, _ := http.NewRequest("POST", "https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token", strings.NewReader(
@@ -273,7 +273,7 @@ func HandlerFinishConnectFortniteAccount(db *sql.DB) gin.HandlerFunc {
 // device auth with secret and device id
 func DeviceAuthIdGrant(db *sql.DB, deviceSecrets types.GameAccountSecrets) (types.LoginResultResponse, error) {
 	//running id grant with device id and secret
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := epicHTTPClient
 	authHeader := "basic " + base64.StdEncoding.EncodeToString([]byte(utils.EpicClient+":"+utils.EpicSecret))
 
 	reqDeviceAuth, _ := http.NewRequest("POST", "https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token", strings.NewReader(
@@ -319,7 +319,7 @@ func HandlerAuthorizationCodeLogin(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		client := &http.Client{Timeout: 10 * time.Second}
+		client := epicHTTPClient
 		authHeader := "basic " + base64.StdEncoding.EncodeToString([]byte(utils.EpicClient+":"+utils.EpicSecret))
 
 		reqToken, _ := http.NewRequest("POST", "https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token", strings.NewReader(
@@ -382,7 +382,7 @@ func HandlerAuthorizationCodeLogin(db *sql.DB) gin.HandlerFunc {
 }
 
 func RefreshAccessToken(refreshToken string, db *sql.DB) (types.LoginResultResponse, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := epicHTTPClient
 	authHeader := "basic " + base64.StdEncoding.EncodeToString([]byte(utils.EpicClient+":"+utils.EpicSecret))
 
 	reqToken, err := http.NewRequest("POST", "https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token", strings.NewReader(
@@ -461,7 +461,7 @@ func ExecuteOperationWithRefresh(request *http.Request, db *sql.DB, GameAccountI
 		request.Header.Set("Authorization", "Bearer "+GameAccount.AccessToken)
 	}
 
-	client := &http.Client{}
+	client := epicHTTPClient
 	resp, err := client.Do(request)
 	if err != nil {
 		fmt.Printf("Initial request execution failed for account %s: %v\n", GameAccountID, err)
