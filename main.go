@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -38,24 +39,20 @@ func main() {
 	router.Use(gin.Logger())
 	router.Use(gin.Recovery())
 
-	allowedOrigins := map[string]bool{
-		"*":                                true,
-		"http://localhost:5173":            true,
-		"http://localhost:3000":            true,
-		"https://your-production-site.com": true,
-		"chrome-extension://gmmkjpcadciiokjpikmkkmapphbmdjok":           true,
-		"https://kidstoreperu-frontend-react-production.up.railway.app": true,
+	allowedOrigins := make(map[string]bool, len(cfg.AllowedOrigins))
+	for _, origin := range cfg.AllowedOrigins {
+		if o := strings.TrimSpace(origin); o != "" {
+			allowedOrigins[o] = true
+		}
 	}
 
 	router.Use(cors.New(cors.Config{
 		AllowOriginFunc: func(origin string) bool {
-			fmt.Println("CORS Origin Check:", origin)
 			return allowedOrigins[origin]
 		},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Content-Length", "Accept", "Authorization"},
 		ExposeHeaders:    []string{"X-Total-Count"},
-		AllowWildcard:    true,
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
 	}))

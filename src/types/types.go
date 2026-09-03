@@ -22,6 +22,12 @@ type EnvConfigType struct {
 	Epic_client            string `envconfig:"EPIC_CLIENT" default:""`
 	Epic_secret            string `envconfig:"EPIC_SECRET" default:""`
 	Fetch_pavos            bool   `envconfig:"FETCH_PAVOS" default:"true"`
+
+	// Comma-separated list of origins allowed by CORS.
+	AllowedOrigins []string `envconfig:"ALLOWED_ORIGINS" default:"http://localhost:5173,http://localhost:3000,https://kidstoreperu-frontend-react-production.up.railway.app,chrome-extension://gmmkjpcadciiokjpikmkkmapphbmdjok"`
+
+	// Port the HTTP server listens on. Railway and most PaaS set $PORT.
+	Port_HTTP string `envconfig:"PORT" default:"8080"`
 }
 
 // Fortnite API Login
