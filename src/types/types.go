@@ -13,6 +13,7 @@ type EnvConfigType struct {
 	User                   string `envconfig:"DB_USER"`
 	Password               string `envconfig:"DB_PASSWORD"`
 	DBName                 string `envconfig:"DB_NAME"`
+	SSLMode                string `envconfig:"DB_SSLMODE" default:"disable"`
 	SecretKey              string `envconfig:"SECRET_KEY"`
 	AdminUser              string `envconfig:"ADMIN_USER"`
 	AdminPass              string `envconfig:"ADMIN_PASS"`

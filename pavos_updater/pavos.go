@@ -3,6 +3,7 @@ package main
 import (
 	database "KidStoreBotBE/src/db"
 	"KidStoreBotBE/src/fortnite"
+	"KidStoreBotBE/src/utils"
 	"database/sql"
 	"fmt"
 	"log"
@@ -10,19 +11,17 @@ import (
 	_ "github.com/lib/pq"
 )
 
-// Database configuration - hardcoded for portability
-const (
-	DB_HOST     = "ballast.proxy.rlwy.net"
-	DB_PORT     = 44201
-	DB_USER     = "postgres"
-	DB_PASSWORD = "feIjJFjgDnUmFIdGiNhcTSydADlcgbiG"
-	DB_NAME     = "railway"
-)
-
 func main() {
-	// Construct the PostgreSQL connection string using hardcoded values
-	psqlInfo := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
-		DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME)
+	// Configuration comes from the environment (or a local .env file), the same
+	// way the main server loads it. See src/utils/config.go.
+	//
+	// Required: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, SECRET_KEY.
+	// When connecting over the public internet (e.g. a Railway proxy host)
+	// set DB_SSLMODE=require.
+	cfg := utils.Config
+
+	psqlInfo := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.DBName, cfg.SSLMode)
 
 	db, err := sql.Open("postgres", psqlInfo)
 	if err != nil {
@@ -31,8 +30,7 @@ func main() {
 	defer db.Close()
 
 	// Test the connection
-	err = db.Ping()
-	if err != nil {
+	if err := db.Ping(); err != nil {
 		log.Fatalf("Error connecting to the database: %v", err)
 	}
 
