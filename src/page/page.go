@@ -380,30 +380,18 @@ func HandlerGetTransactionsByAccount(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		for _, account := range gameAccounts {
-
-			rows, err := db.Query(`SELECT id, game_account_id, sender_name, receiver_id, receiver_username, object_store_id, object_store_name, regular_price, final_price, gift_image, created_at FROM transactions WHERE game_account_id = $1`, account.ID)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not fetch transactions", "details": err.Error()})
-				return
-			}
-			defer rows.Close()
-			var transactions []types.Transaction
-			for rows.Next() {
-				var tx types.Transaction
-				if err := rows.Scan(&tx.ID, &tx.GameAccountID, &tx.SenderName, &tx.ReceiverID, &tx.ReceiverName, &tx.ObjectStoreID, &tx.ObjectStoreName, &tx.RegularPrice, &tx.FinalPrice, &tx.GiftImage, &tx.CreatedAt); err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not scan transaction", "details": err.Error()})
-					return
-				}
-				transactions = append(transactions, tx)
-			}
-			if len(transactions) > 0 {
-				// If we found transactions for this account, return them
-				c.JSON(http.StatusOK, gin.H{"success": true, "transactions": transactions})
-				return
-			}
+		accountIDs := make([]uuid.UUID, len(gameAccounts))
+		for i, account := range gameAccounts {
+			accountIDs[i] = account.ID
 		}
 
+		transactions, err := database.GetTransactionsByAccountIDs(db, accountIDs)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not fetch transactions", "details": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"success": true, "transactions": transactions})
 	}
 }
 

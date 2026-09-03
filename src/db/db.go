@@ -434,6 +434,29 @@ func UpdatePaVos(db *sql.DB, accountID uuid.UUID, pavos int) error {
 	return err
 }
 
+// GetTransactionsByAccountIDs returns all transactions for the given accounts,
+// newest first.
+func GetTransactionsByAccountIDs(db *sql.DB, accountIDs []uuid.UUID) ([]types.Transaction, error) {
+	if len(accountIDs) == 0 {
+		return []types.Transaction{}, nil
+	}
+	rows, err := db.Query(`SELECT id, game_account_id, sender_name, receiver_id, receiver_username, object_store_id, object_store_name, regular_price, final_price, gift_image, created_at FROM transactions WHERE game_account_id = ANY($1) ORDER BY created_at DESC`, pq.Array(accountIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	transactions := []types.Transaction{}
+	for rows.Next() {
+		var tx types.Transaction
+		if err := rows.Scan(&tx.ID, &tx.GameAccountID, &tx.SenderName, &tx.ReceiverID, &tx.ReceiverName, &tx.ObjectStoreID, &tx.ObjectStoreName, &tx.RegularPrice, &tx.FinalPrice, &tx.GiftImage, &tx.CreatedAt); err != nil {
+			return nil, err
+		}
+		transactions = append(transactions, tx)
+	}
+	return transactions, rows.Err()
+}
+
 func GetTransactions(db *sql.DB) ([]types.Transaction, error) {
 	var transactions []types.Transaction
 	rows, err := db.Query(`SELECT id, game_account_id, sender_name, receiver_id, receiver_username, object_store_id, object_store_name, regular_price, final_price, gift_image, created_at FROM transactions`)
