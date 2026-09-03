@@ -584,20 +584,22 @@ func SmartUpdatePavos(db *sql.DB, accountID uuid.UUID, pavos int) error {
 // Handle Authorization_Code login  (input authorization code) output:
 //raw example
 
-func UpdateRemainingGiftsInAccounts(db *sql.DB) error {
-	// Sleep for 5 minutes (more frequent updates for better accuracy)
-	time.Sleep(5 * time.Minute)
+// UpdateRemainingGiftsInAccounts periodically recalculates every account's
+// remaining gift slots from the 24h transaction history. It runs forever and is
+// meant to be started as a goroutine.
+func UpdateRemainingGiftsInAccounts(db *sql.DB) {
+	const interval = 5 * time.Minute
 
-	fmt.Println("Starting gift slot refresh process...")
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 
-	// Use the new proper calculation method
-	err := database.UpdateAllRemainingGifts(db)
-	if err != nil {
-		return fmt.Errorf("could not update remaining gifts: %w", err)
+	for range ticker.C {
+		if err := database.UpdateAllRemainingGifts(db); err != nil {
+			fmt.Printf("Gift slot refresh failed: %v\n", err)
+			continue
+		}
+		fmt.Println("Gift slot refresh completed successfully")
 	}
-
-	fmt.Println("Gift slot refresh completed successfully")
-	return nil
 }
 
 // HandlerRefreshPavosForAccount handles refreshing pavos for a specific game account
