@@ -115,9 +115,11 @@ func HandlerFinishConnectFortniteAccount(db *sql.DB) gin.HandlerFunc {
 		client := epicHTTPClient
 		authHeader := "basic " + base64.StdEncoding.EncodeToString([]byte(utils.EpicClient+":"+utils.EpicSecret))
 
-		reqToken, _ := http.NewRequest("POST", "https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token", strings.NewReader(
-			"grant_type=device_code&device_code="+req.DeviceCode,
-		))
+		form := url.Values{
+			"grant_type":  {"device_code"},
+			"device_code": {req.DeviceCode},
+		}
+		reqToken, _ := http.NewRequest("POST", "https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token", strings.NewReader(form.Encode()))
 		reqToken.Header.Set("Authorization", authHeader)
 		reqToken.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
@@ -276,9 +278,13 @@ func DeviceAuthIdGrant(db *sql.DB, deviceSecrets types.GameAccountSecrets) (type
 	client := epicHTTPClient
 	authHeader := "basic " + base64.StdEncoding.EncodeToString([]byte(utils.EpicClient+":"+utils.EpicSecret))
 
-	reqDeviceAuth, _ := http.NewRequest("POST", "https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token", strings.NewReader(
-		"grant_type=device_auth&device_id="+deviceSecrets.DeviceId+"&secret="+deviceSecrets.Secret+"&account_id="+deviceSecrets.AccountId,
-	))
+	form := url.Values{
+		"grant_type": {"device_auth"},
+		"device_id":  {deviceSecrets.DeviceId},
+		"secret":     {deviceSecrets.Secret},
+		"account_id": {deviceSecrets.AccountId},
+	}
+	reqDeviceAuth, _ := http.NewRequest("POST", "https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token", strings.NewReader(form.Encode()))
 	reqDeviceAuth.Header.Set("Authorization", authHeader)
 	reqDeviceAuth.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
