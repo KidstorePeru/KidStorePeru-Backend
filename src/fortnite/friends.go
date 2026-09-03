@@ -35,6 +35,16 @@ func HandlerSearchOnlineFortniteAccount(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		// Only the account owner (or an admin) may search from this account.
+		gameAccount, err := database.GetGameAccount(db, AccountID)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "Game account not found"})
+			return
+		}
+		if !authorizeAccountAccess(c, gameAccount) {
+			return
+		}
+
 		request, _ := http.NewRequest("GET", fmt.Sprintf("https://account-public-service-prod.ol.epicgames.com/account/api/public/account/displayName/%s", req.DisplayName), nil)
 
 		resp, err := ExecuteOperationWithRefresh(request, db, AccountID, "friendSearch")
@@ -189,6 +199,11 @@ func HandlerSendFriendRequestFromAllAccounts(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		result := utils.ProtectedEndpointHandler(c)
 		if result != 200 {
+			return
+		}
+
+		// This fans out across every connected account, so it is admin-only.
+		if !requireAdmin(c) {
 			return
 		}
 

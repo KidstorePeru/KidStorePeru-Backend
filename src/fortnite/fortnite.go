@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -281,6 +282,21 @@ func HandlerSendGift(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		// Only the account owner (or an admin) may gift from this account.
+		gameAccount, err := database.GetGameAccount(db, AccountId)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "Game account not found"})
+			return
+		}
+		if !authorizeAccountAccess(c, gameAccount) {
+			return
+		}
+
+		// Serialize gifts for this account so concurrent requests can't both
+		// pass the slot check below.
+		unlock := lockAccount(AccountId)
+		defer unlock()
+
 		remainingGifts, err := database.GetRemainingGifts(db, AccountId)
 		fmt.Printf("Remaining gifts for account %s: %d\n", AccountId, remainingGifts)
 		if err != nil {
@@ -307,7 +323,7 @@ func HandlerSendGift(db *sql.DB) gin.HandlerFunc {
 		req.AccountID = strings.ReplaceAll(req.AccountID, "-", "")
 		req.ReceiverID = strings.ReplaceAll(req.ReceiverID, "-", "")
 
-		err, err2 := sendGiftRequest(db, req.AccountID, AccountId, req.ReceiverID, req.GiftId, req.GiftPrice, &req.SenderName)
+		err, err2 := sendGiftRequest(db, req.AccountID, AccountId, req.ReceiverID, req.GiftId, req.GiftPrice, &req.SenderName, req.Message)
 		if err != nil {
 			fmt.Printf("Error sending gift request: %v\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -381,7 +397,14 @@ func HandlerSendGift(db *sql.DB) gin.HandlerFunc {
 			fmt.Printf("PaVos updated manually after automatic update failed\n")
 		}
 
-		err = database.UpdateRemainingGifts(db, AccountId, remainingGifts-1)
+		// Recompute the cached counter from the 24h transaction history rather
+		// than blindly decrementing, so it stays consistent with the source of
+		// truth even if a slot expired mid-request.
+		newRemaining, calcErr := database.CalculateRemainingGifts(db, AccountId)
+		if calcErr != nil {
+			newRemaining = remainingGifts - 1
+		}
+		err = database.UpdateRemainingGifts(db, AccountId, newRemaining)
 		if err != nil {
 			fmt.Printf("Error updating remaining gifts: %v\n", err)
 			c.JSON(http.StatusAccepted, gin.H{
@@ -436,7 +459,12 @@ func HandlerSendGift(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func sendGiftRequest(db *sql.DB, accountIDStr string, accountID uuid.UUID, receiverUserID string, giftItem string, giftPrice int, senderName *string) (error, error) {
+func sendGiftRequest(db *sql.DB, accountIDStr string, accountID uuid.UUID, receiverUserID string, giftItem string, giftPrice int, senderName *string, personalMessage string) (error, error) {
+	// Epic rejects personal messages longer than 100 characters.
+	if utf8.RuneCountInString(personalMessage) > 100 {
+		personalMessage = string([]rune(personalMessage)[:100])
+	}
+
 	payload := map[string]interface{}{
 		"offerId":            giftItem,
 		"currency":           "MtxCurrency",
@@ -445,7 +473,7 @@ func sendGiftRequest(db *sql.DB, accountIDStr string, accountID uuid.UUID, recei
 		"gameContext":        "Frontend.CatabaScreen",
 		"receiverAccountIds": []string{receiverUserID},
 		"giftWrapTemplateId": "",
-		"personalMessage":    "",
+		"personalMessage":    personalMessage,
 	}
 
 	jsonPayload, err := json.Marshal(payload)
@@ -574,20 +602,22 @@ func SmartUpdatePavos(db *sql.DB, accountID uuid.UUID, pavos int) error {
 // Handle Authorization_Code login  (input authorization code) output:
 //raw example
 
-func UpdateRemainingGiftsInAccounts(db *sql.DB) error {
-	// Sleep for 5 minutes (more frequent updates for better accuracy)
-	time.Sleep(5 * time.Minute)
+// UpdateRemainingGiftsInAccounts periodically recalculates every account's
+// remaining gift slots from the 24h transaction history. It runs forever and is
+// meant to be started as a goroutine.
+func UpdateRemainingGiftsInAccounts(db *sql.DB) {
+	const interval = 5 * time.Minute
 
-	fmt.Println("Starting gift slot refresh process...")
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 
-	// Use the new proper calculation method
-	err := database.UpdateAllRemainingGifts(db)
-	if err != nil {
-		return fmt.Errorf("could not update remaining gifts: %w", err)
+	for range ticker.C {
+		if err := database.UpdateAllRemainingGifts(db); err != nil {
+			fmt.Printf("Gift slot refresh failed: %v\n", err)
+			continue
+		}
+		fmt.Println("Gift slot refresh completed successfully")
 	}
-
-	fmt.Println("Gift slot refresh completed successfully")
-	return nil
 }
 
 // HandlerRefreshPavosForAccount handles refreshing pavos for a specific game account

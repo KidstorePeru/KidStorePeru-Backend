@@ -201,7 +201,7 @@ func GetAllGameAccounts(db *sql.DB) ([]types.GameAccount, error) {
 
 func GetGameAccount(db *sql.DB, id uuid.UUID) (types.GameAccount, error) {
 	var account types.GameAccount
-	err := db.QueryRow(`SELECT id, display_name, remaining_gifts, pavos, access_token, access_token_exp, access_token_exp_date, refresh_token, refresh_token_exp, refresh_token_exp_date FROM game_accounts WHERE id = $1`, id).Scan(&account.ID, &account.DisplayName, &account.RemainingGifts, &account.PaVos, &account.AccessToken, &account.AccessTokenExp, &account.AccessTokenExpDate, &account.RefreshToken, &account.RefreshTokenExp, &account.RefreshTokenExpDate)
+	err := db.QueryRow(`SELECT id, display_name, remaining_gifts, pavos, access_token, access_token_exp, access_token_exp_date, refresh_token, refresh_token_exp, refresh_token_exp_date, COALESCE(owner_user_id, '00000000-0000-0000-0000-000000000000') FROM game_accounts WHERE id = $1`, id).Scan(&account.ID, &account.DisplayName, &account.RemainingGifts, &account.PaVos, &account.AccessToken, &account.AccessTokenExp, &account.AccessTokenExpDate, &account.RefreshToken, &account.RefreshTokenExp, &account.RefreshTokenExpDate, &account.OwnerUserID)
 	if err != nil {
 		fmt.Printf("Error getting game account: %v", err)
 		return types.GameAccount{}, err
@@ -432,6 +432,29 @@ func UpdatePaVos(db *sql.DB, accountID uuid.UUID, pavos int) error {
 		fmt.Printf("Error updating PaVos: %v", err)
 	}
 	return err
+}
+
+// GetTransactionsByAccountIDs returns all transactions for the given accounts,
+// newest first.
+func GetTransactionsByAccountIDs(db *sql.DB, accountIDs []uuid.UUID) ([]types.Transaction, error) {
+	if len(accountIDs) == 0 {
+		return []types.Transaction{}, nil
+	}
+	rows, err := db.Query(`SELECT id, game_account_id, sender_name, receiver_id, receiver_username, object_store_id, object_store_name, regular_price, final_price, gift_image, created_at FROM transactions WHERE game_account_id = ANY($1) ORDER BY created_at DESC`, pq.Array(accountIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	transactions := []types.Transaction{}
+	for rows.Next() {
+		var tx types.Transaction
+		if err := rows.Scan(&tx.ID, &tx.GameAccountID, &tx.SenderName, &tx.ReceiverID, &tx.ReceiverName, &tx.ObjectStoreID, &tx.ObjectStoreName, &tx.RegularPrice, &tx.FinalPrice, &tx.GiftImage, &tx.CreatedAt); err != nil {
+			return nil, err
+		}
+		transactions = append(transactions, tx)
+	}
+	return transactions, rows.Err()
 }
 
 func GetTransactions(db *sql.DB) ([]types.Transaction, error) {

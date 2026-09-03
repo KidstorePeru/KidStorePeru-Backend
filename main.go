@@ -3,80 +3,76 @@ package main
 import (
 	"KidStoreBotBE/src/fortnite"
 	page "KidStoreBotBE/src/page"
-	"KidStoreBotBE/src/types"
 	"KidStoreBotBE/src/utils"
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/joho/godotenv"
-	"github.com/kelseyhightower/envconfig"
 	_ "github.com/lib/pq"
 )
 
 // ============================ MAIN ============================
 func main() {
-	if _, err := os.Stat(".env"); err == nil {
-		if err := godotenv.Load(); err != nil {
-			log.Fatalf("Error loading .env file: %v", err)
-		}
-	}
+	gin.SetMode(gin.ReleaseMode)
 
-	var cfg types.EnvConfigType
-	if err := envconfig.Process("", &cfg); err != nil {
-		log.Fatalf("Error processing environment variables: %v", err)
+	// Configuration (including .env loading) is processed once in
+	// utils' package init(). See src/utils/config.go.
+	if err := utils.ValidateConfig(); err != nil {
+		log.Fatal(err)
 	}
+	cfg := utils.Config
 
-	psqlInfo := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
-		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.DBName)
+	psqlInfo := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.DBName, cfg.SSLMode)
 	db, err := sql.Open("postgres", psqlInfo)
 	if err != nil {
 		panic(err)
 	}
 	defer db.Close()
 
-	err = db.Ping()
-	if err != nil {
-		fmt.Printf("Error connecting to the database: %v", err)
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	db.SetConnMaxIdleTime(5 * time.Minute)
+
+	if err := db.Ping(); err != nil {
+		fmt.Printf("Error connecting to the database: %v\n", err)
 		panic(err)
 	}
 
-	router := gin.Default()
-	router.Use(gin.Logger())
-	router.Use(gin.Recovery())
+	router := gin.Default() // includes Logger + Recovery
 
-	allowedOrigins := map[string]bool{
-		"*":                               true,
-		"http://localhost:5173":           true,
-		"http://localhost:3000":           true,
-		"https://your-production-site.com": true,
-		"chrome-extension://gmmkjpcadciiokjpikmkkmapphbmdjok":         true,
-		"https://kidstoreperu-frontend-react-production.up.railway.app": true,
+	allowedOrigins := make(map[string]bool, len(cfg.AllowedOrigins))
+	for _, origin := range cfg.AllowedOrigins {
+		if o := strings.TrimSpace(origin); o != "" {
+			allowedOrigins[o] = true
+		}
 	}
 
 	router.Use(cors.New(cors.Config{
 		AllowOriginFunc: func(origin string) bool {
-			fmt.Println("CORS Origin Check:", origin)
 			return allowedOrigins[origin]
 		},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Content-Length", "Accept", "Authorization"},
 		ExposeHeaders:    []string{"X-Total-Count"},
-		AllowWildcard:    true,
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
 	}))
 
 	router.Use(utils.GenericMiddleware)
-	gin.SetMode(gin.ReleaseMode)
 
 	authorized := router.Group("/", utils.AuthMiddleware())
-	authorized.Use(utils.GenericMiddleware)
 
 	router.GET("/", func(c *gin.Context) {
 		c.String(http.StatusOK, "Welcome Gin Server")
@@ -89,7 +85,8 @@ func main() {
 		}
 		_, dUserID, err := utils.GetUserIdFromToken(c)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": err})
+			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": err.Error()})
+			return
 		}
 		IsTokenAdmin := utils.IsTokenAdmin(c)
 		if IsTokenAdmin {
@@ -127,8 +124,30 @@ func main() {
 	authorized.GET("/transactions", page.HandlerGetTransactionsByAccount(db))
 	authorized.GET("/alltransactions", page.HandlerGetTransactionsAdmin(db))
 
-	go fortnite.StartFriendRequestHandler(db, cfg.AcceptFriendsInMinutes)
+	go fortnite.StartFriendRequestHandler(db, cfg.AcceptFriendsInSeconds)
 	go fortnite.UpdateRemainingGiftsInAccounts(db)
 
-	router.Run(":8080")
+	srv := &http.Server{
+		Addr:              ":" + cfg.Port_HTTP,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			panic(err)
+		}
+	}()
+	fmt.Printf("listening on :%s\n", cfg.Port_HTTP)
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	<-quit
+	fmt.Println("shutting down...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		fmt.Printf("forced shutdown: %v\n", err)
+	}
 }

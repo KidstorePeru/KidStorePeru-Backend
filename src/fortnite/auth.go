@@ -28,10 +28,11 @@ func HandlerConnectFortniteAccount(db *sql.DB) gin.HandlerFunc {
 
 		_, _, err := utils.GetUserIdFromToken(c)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": err})
+			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": err.Error()})
+			return
 		}
 
-		client := &http.Client{Timeout: 10 * time.Second}
+		client := epicHTTPClient
 		authHeader := "basic " + base64.StdEncoding.EncodeToString([]byte(utils.EpicClient+":"+utils.EpicSecret))
 
 		// Step 1: Get client credentials token
@@ -101,7 +102,8 @@ func HandlerFinishConnectFortniteAccount(db *sql.DB) gin.HandlerFunc {
 
 		_, userIdUUID, err := utils.GetUserIdFromToken(c)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": err})
+			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": err.Error()})
+			return
 		}
 
 		var req types.DeviceCodeRequest
@@ -110,12 +112,14 @@ func HandlerFinishConnectFortniteAccount(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		client := &http.Client{Timeout: 10 * time.Second}
+		client := epicHTTPClient
 		authHeader := "basic " + base64.StdEncoding.EncodeToString([]byte(utils.EpicClient+":"+utils.EpicSecret))
 
-		reqToken, _ := http.NewRequest("POST", "https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token", strings.NewReader(
-			"grant_type=device_code&device_code="+req.DeviceCode,
-		))
+		form := url.Values{
+			"grant_type":  {"device_code"},
+			"device_code": {req.DeviceCode},
+		}
+		reqToken, _ := http.NewRequest("POST", "https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token", strings.NewReader(form.Encode()))
 		reqToken.Header.Set("Authorization", authHeader)
 		reqToken.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
@@ -124,13 +128,12 @@ func HandlerFinishConnectFortniteAccount(db *sql.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not Authorize user in step 1", "details": err.Error()})
 			return
 		}
+		defer respToken.Body.Close()
 
-		if respToken.StatusCode == 400 || respToken.StatusCode != 200 {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid device code or expired", "details": respToken.Body, "status_code": respToken.StatusCode})
+		if respToken.StatusCode != http.StatusOK {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid device code or expired", "status_code": respToken.StatusCode})
 			return
 		}
-
-		defer respToken.Body.Close()
 
 		var tokenResultStep1 types.LoginResultResponse
 		if err := json.NewDecoder(respToken.Body).Decode(&tokenResultStep1); err != nil {
@@ -271,12 +274,16 @@ func HandlerFinishConnectFortniteAccount(db *sql.DB) gin.HandlerFunc {
 // device auth with secret and device id
 func DeviceAuthIdGrant(db *sql.DB, deviceSecrets types.GameAccountSecrets) (types.LoginResultResponse, error) {
 	//running id grant with device id and secret
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := epicHTTPClient
 	authHeader := "basic " + base64.StdEncoding.EncodeToString([]byte(utils.EpicClient+":"+utils.EpicSecret))
 
-	reqDeviceAuth, _ := http.NewRequest("POST", "https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token", strings.NewReader(
-		"grant_type=device_auth&device_id="+deviceSecrets.DeviceId+"&secret="+deviceSecrets.Secret+"&account_id="+deviceSecrets.AccountId,
-	))
+	form := url.Values{
+		"grant_type": {"device_auth"},
+		"device_id":  {deviceSecrets.DeviceId},
+		"secret":     {deviceSecrets.Secret},
+		"account_id": {deviceSecrets.AccountId},
+	}
+	reqDeviceAuth, _ := http.NewRequest("POST", "https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token", strings.NewReader(form.Encode()))
 	reqDeviceAuth.Header.Set("Authorization", authHeader)
 	reqDeviceAuth.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
@@ -307,7 +314,8 @@ func HandlerAuthorizationCodeLogin(db *sql.DB) gin.HandlerFunc {
 
 		_, userIdUUID, err := utils.GetUserIdFromToken(c)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": err})
+			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": err.Error()})
+			return
 		}
 
 		var req types.AuthorizationCode
@@ -316,7 +324,7 @@ func HandlerAuthorizationCodeLogin(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		client := &http.Client{Timeout: 10 * time.Second}
+		client := epicHTTPClient
 		authHeader := "basic " + base64.StdEncoding.EncodeToString([]byte(utils.EpicClient+":"+utils.EpicSecret))
 
 		reqToken, _ := http.NewRequest("POST", "https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token", strings.NewReader(
@@ -379,7 +387,7 @@ func HandlerAuthorizationCodeLogin(db *sql.DB) gin.HandlerFunc {
 }
 
 func RefreshAccessToken(refreshToken string, db *sql.DB) (types.LoginResultResponse, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := epicHTTPClient
 	authHeader := "basic " + base64.StdEncoding.EncodeToString([]byte(utils.EpicClient+":"+utils.EpicSecret))
 
 	reqToken, err := http.NewRequest("POST", "https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token", strings.NewReader(
@@ -406,11 +414,8 @@ func RefreshAccessToken(refreshToken string, db *sql.DB) (types.LoginResultRespo
 	}
 
 	if respToken.StatusCode != 200 {
-		return types.LoginResultResponse{}, fmt.Errorf("unexpected status code: %d, response: %s", respToken.StatusCode, respToken.Body)
+		return types.LoginResultResponse{}, fmt.Errorf("unexpected status code: %d", respToken.StatusCode)
 	}
-
-	//print response
-	fmt.Println("Token result:", tokenResult)
 
 	//UPDATE DB
 	AccountId, err := uuid.Parse(tokenResult.AccountId)
@@ -450,8 +455,6 @@ func ExecuteOperationWithRefresh(request *http.Request, db *sql.DB, GameAccountI
 
 	// Set appropriate header
 	if source == "pavos" {
-		fmt.Printf("Using Pavo source for account %s\n and access token %s", GameAccountID, GameAccount.AccessToken)
-
 		// Set headers exactly as they work in Edge browser
 		request.Header.Set("User-Agent", "KidStore/1.0.0")
 		request.Header.Set("Accept", "*/*")
@@ -460,11 +463,10 @@ func ExecuteOperationWithRefresh(request *http.Request, db *sql.DB, GameAccountI
 
 		request.Header.Set("Cookie", "EPIC_BEARER_TOKEN=2cac1ce0234b433da4d63104412b647f")
 	} else {
-		fmt.Printf("Using standard source for account %s\n and access token %s", GameAccountID, GameAccount.AccessToken)
 		request.Header.Set("Authorization", "Bearer "+GameAccount.AccessToken)
 	}
 
-	client := &http.Client{}
+	client := epicHTTPClient
 	resp, err := client.Do(request)
 	if err != nil {
 		fmt.Printf("Initial request execution failed for account %s: %v\n", GameAccountID, err)
@@ -480,10 +482,8 @@ func ExecuteOperationWithRefresh(request *http.Request, db *sql.DB, GameAccountI
 			fmt.Printf("Failed to read response body for account %s: %v\n", GameAccountID, err)
 			return nil, fmt.Errorf("could not read response body: %w", err)
 		}
-		//do not print response body if source is gift
-		if source != "gift" {
-			fmt.Printf("Response Body: %s\n", string(bodyBytes))
-		}
+		// Note: the response body may contain access/refresh tokens, so it is
+		// deliberately not logged here.
 		resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes)) // Reset body for further reads
 	} else {
 		fmt.Printf("Response Body is nil for account %s\n", GameAccountID)
@@ -551,7 +551,7 @@ func ExecuteOperationWithRefresh(request *http.Request, db *sql.DB, GameAccountI
 			fmt.Printf("Could not get device secrets for account %s: %v\n", GameAccountStr, err)
 			return nil, fmt.Errorf("could not get device secrets: %w", err)
 		}
-		fmt.Printf("Device Secrets for %s: %+v\n", GameAccountStr, deviceSecrets)
+		fmt.Printf("Retrieved device secrets for account %s\n", GameAccountStr)
 
 		newTokens, err = DeviceAuthIdGrant(db, deviceSecrets)
 		if err != nil {
@@ -611,8 +611,23 @@ func HandlerDisconnectFAccount(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		err := database.DeleteGameAccountByID(db, uuid.MustParse(req.Id))
+		accountID, err := uuid.Parse(req.Id)
 		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid account ID format"})
+			return
+		}
+
+		// Only the owner (or an admin) may disconnect an account.
+		gameAccount, err := database.GetGameAccount(db, accountID)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "Game account not found"})
+			return
+		}
+		if !authorizeAccountAccess(c, gameAccount) {
+			return
+		}
+
+		if err := database.DeleteGameAccountByID(db, accountID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not disconnect Fortnite account", "details": err.Error()})
 			return
 		}
