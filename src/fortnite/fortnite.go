@@ -323,19 +323,33 @@ func HandlerSendGift(db *sql.DB) gin.HandlerFunc {
 		req.AccountID = strings.ReplaceAll(req.AccountID, "-", "")
 		req.ReceiverID = strings.ReplaceAll(req.ReceiverID, "-", "")
 
-		err, err2 := sendGiftRequest(db, req.AccountID, AccountId, req.ReceiverID, req.GiftId, req.GiftPrice, &req.SenderName, req.Message)
-		if err != nil {
-			fmt.Printf("Error sending gift request: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{
+		giftInfo := gin.H{
+			"senderName":   req.SenderName,
+			"receiverName": req.ReceiverName,
+			"giftName":     req.GiftName,
+			"giftPrice":    req.GiftPrice,
+			"giftImage":    req.GiftImage,
+			"giftId":       req.GiftId,
+		}
+
+		// Send the gift. This returns an error unless Epic actually accepted it,
+		// so nothing below runs (and no slot/pavos is spent) on a failed gift.
+		if err := sendGiftRequest(db, req.AccountID, AccountId, req.ReceiverID, req.GiftId, req.GiftPrice, &req.SenderName, req.Message); err != nil {
+			fmt.Printf("Gift send FAILED for account %s -> %s: %v\n", AccountId, req.ReceiverID, err)
+			c.JSON(http.StatusBadGateway, gin.H{
 				"success": false,
-				"error":   "Could not send gift",
+				"error":   "No se pudo enviar el regalo",
 				"details": err.Error(),
 			})
 			return
 		}
 
-		// Attempt to record the transaction
-		err = database.AddTransaction(db, types.Transaction{
+		// ---- Epic accepted the gift. Everything below is bookkeeping: if it
+		//      fails the gift still went through, so we answer 202 with warnings,
+		//      never an error. ----
+		var warnings []string
+
+		if err := database.AddTransaction(db, types.Transaction{
 			ID:              uuid.New(),
 			GameAccountID:   AccountId,
 			SenderName:      &req.SenderName,
@@ -347,119 +361,53 @@ func HandlerSendGift(db *sql.DB) gin.HandlerFunc {
 			FinalPrice:      float64(req.GiftPrice),
 			GiftImage:       req.GiftImage,
 			CreatedAt:       time.Now(),
-		})
-		if err != nil {
-			fmt.Printf("Error adding transaction: %v\n", err)
-			c.JSON(http.StatusAccepted, gin.H{
-				"success": true,
-				"message": "Regalo enviado exitosamente",
-				"error":   "No se pudo registrar la transacción",
-				"details": err.Error(),
-				"giftInfo": gin.H{
-					"senderName":   req.SenderName,
-					"receiverName": req.ReceiverName,
-					"giftName":     req.GiftName,
-					"giftPrice":    req.GiftPrice,
-					"giftImage":    req.GiftImage,
-					"giftId":       req.GiftId,
-				},
-			})
-			return
+		}); err != nil {
+			fmt.Printf("Warning: could not record gift transaction: %v\n", err)
+			warnings = append(warnings, "no se pudo registrar la transacción")
 		}
 
-		_, err = UpdatePavosGameAccount(db, AccountId)
-		if err != nil || !utils.FetchPavos {
-			fmt.Printf("Error updating PaVos from Epic automatically: %v\n", err)
-			fmt.Printf("Attempting manual PaVos update by subtracting gift price: %d\n", req.GiftPrice)
-
-			// Try manual update by subtracting the gift price
-			_, manualErr := UpdatePavosGameAccountManually(db, AccountId, req.GiftPrice)
-			if manualErr != nil {
-				fmt.Printf("Error updating PaVos manually: %v\n", manualErr)
-				c.JSON(http.StatusAccepted, gin.H{
-					"success": true,
-					"message": "Regalo enviado exitosamente",
-					"error":   "No se pudieron actualizar los PaVos (automático ni manual)",
-					"details": fmt.Sprintf("Automático: %v, Manual: %v", err.Error(), manualErr.Error()),
-					"giftInfo": gin.H{
-						"senderName":   req.SenderName,
-						"receiverName": req.ReceiverName,
-						"giftName":     req.GiftName,
-						"giftPrice":    req.GiftPrice,
-						"giftImage":    req.GiftImage,
-						"giftId":       req.GiftId,
-					},
-				})
-				return
+		if _, err := UpdatePavosGameAccount(db, AccountId); err != nil || !utils.FetchPavos {
+			if _, manualErr := UpdatePavosGameAccountManually(db, AccountId, req.GiftPrice); manualErr != nil {
+				fmt.Printf("Warning: could not update pavos (auto: %v, manual: %v)\n", err, manualErr)
+				warnings = append(warnings, "no se pudieron actualizar los pavos")
 			}
-
-			// Manual update succeeded
-			fmt.Printf("PaVos updated manually after automatic update failed\n")
 		}
 
-		// Recompute the cached counter from the 24h transaction history rather
-		// than blindly decrementing, so it stays consistent with the source of
-		// truth even if a slot expired mid-request.
+		// Recompute the cached counter from the 24h transaction history so it
+		// stays consistent with the source of truth.
 		newRemaining, calcErr := database.CalculateRemainingGifts(db, AccountId)
 		if calcErr != nil {
 			newRemaining = remainingGifts - 1
 		}
-		err = database.UpdateRemainingGifts(db, AccountId, newRemaining)
-		if err != nil {
-			fmt.Printf("Error updating remaining gifts: %v\n", err)
-			c.JSON(http.StatusAccepted, gin.H{
-				"success": true,
-				"message": "Regalo enviado exitosamente",
-				"error":   "No se pudo actualizar el contador de regalos restantes",
-				"details": err.Error(),
-				"giftInfo": gin.H{
-					"senderName":   req.SenderName,
-					"receiverName": req.ReceiverName,
-					"giftName":     req.GiftName,
-					"giftPrice":    req.GiftPrice,
-					"giftImage":    req.GiftImage,
-					"giftId":       req.GiftId,
-				},
-			})
-			return
+		if err := database.UpdateRemainingGifts(db, AccountId, newRemaining); err != nil {
+			fmt.Printf("Warning: could not update remaining-gifts counter: %v\n", err)
+			warnings = append(warnings, "no se pudo actualizar el contador de regalos")
 		}
 
-		if err2 != nil {
-			fmt.Printf("Gift sent with soft error: %v\n", err2)
+		if len(warnings) > 0 {
 			c.JSON(http.StatusAccepted, gin.H{
-				"success": true,
-				"message": "Regalo enviado exitosamente",
-				"error":   "Ocurrió un error menor tras enviar el regalo",
-				"details": err2.Error(),
-				"giftInfo": gin.H{
-					"senderName":   req.SenderName,
-					"receiverName": req.ReceiverName,
-					"giftName":     req.GiftName,
-					"giftPrice":    req.GiftPrice,
-					"giftImage":    req.GiftImage,
-					"giftId":       req.GiftId,
-				},
+				"success":  true,
+				"message":  "Regalo enviado exitosamente",
+				"warnings": warnings,
+				"giftInfo": giftInfo,
 			})
 			return
 		}
 
 		fmt.Printf("Gift sent successfully from %s to %s\n", req.AccountID, req.ReceiverID)
 		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": "Regalo enviado exitosamente",
-			"giftInfo": gin.H{
-				"senderName":   req.SenderName,
-				"receiverName": req.ReceiverName,
-				"giftName":     req.GiftName,
-				"giftPrice":    req.GiftPrice,
-				"giftImage":    req.GiftImage,
-				"giftId":       req.GiftId,
-			},
+			"success":  true,
+			"message":  "Regalo enviado exitosamente",
+			"giftInfo": giftInfo,
 		})
 	}
 }
 
-func sendGiftRequest(db *sql.DB, accountIDStr string, accountID uuid.UUID, receiverUserID string, giftItem string, giftPrice int, senderName *string, personalMessage string) (error, error) {
+// sendGiftRequest sends the gift to Epic. It returns nil ONLY if Epic accepted
+// the gift (2xx). Every rejection — bad price, ineligible receiver, cooldown,
+// auth failure, etc. — comes back as an error so the caller does not record a
+// transaction or deduct pavos for a gift that never left.
+func sendGiftRequest(db *sql.DB, accountIDStr string, accountID uuid.UUID, receiverUserID, giftItem string, giftPrice int, senderName *string, personalMessage string) error {
 	// Epic rejects personal messages longer than 100 characters.
 	if utf8.RuneCountInString(personalMessage) > 100 {
 		personalMessage = string([]rune(personalMessage)[:100])
@@ -478,55 +426,49 @@ func sendGiftRequest(db *sql.DB, accountIDStr string, accountID uuid.UUID, recei
 
 	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
-		fmt.Println("Error marshaling payload:", err)
-		return err, nil
+		return fmt.Errorf("could not build gift payload: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", fmt.Sprintf("https://fngw-mcp-gc-livefn.ol.epicgames.com/fortnite/api/game/v2/profile/%s/client/GiftCatalogEntry?profileId=common_core", accountIDStr),
-		bytes.NewBuffer(jsonPayload))
+	url := fmt.Sprintf("https://fngw-mcp-gc-livefn.ol.epicgames.com/fortnite/api/game/v2/profile/%s/client/GiftCatalogEntry?profileId=common_core", accountIDStr)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
 	if err != nil {
-		fmt.Println("Error creating request:", err)
-		return err, nil
+		return fmt.Errorf("could not create gift request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := ExecuteOperationWithRefresh(req, db, accountID, "gift")
 	if err != nil {
-		fmt.Println("Error executing request:", err)
-		return err, nil
+		return fmt.Errorf("could not reach Epic: %w", err)
 	}
 	defer resp.Body.Close()
 
-	fmt.Printf("Response status: %s\n", resp.Status)
-	fmt.Printf("Response: %s\n", resp.Proto)
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Printf("Gift response for account %s: HTTP %d\n", accountID, resp.StatusCode)
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("could not read response body: %w", err)
+	// 2xx = Epic accepted the gift.
+	if resp.StatusCode >= 200 && resp.StatusCode <= 204 {
+		return nil
 	}
 
-	// Try to decode JSON if expected
-	var errorResponse map[string]interface{}
-	if err := json.Unmarshal(body, &errorResponse); err != nil {
-		// Log raw body for debugging since it's not valid JSON
-		fmt.Printf("Non-JSON response body: %s\n", string(body))
-		return nil, fmt.Errorf("could not decode JSON, raw body: %s", string(body))
+	// Rejection — surface Epic's reason.
+	var epicErr struct {
+		ErrorCode    string `json:"errorCode"`
+		ErrorMessage string `json:"errorMessage"`
 	}
+	_ = json.Unmarshal(body, &epicErr)
 
-	if errorCode, ok := errorResponse["errorCode"].(string); ok && errorCode == "errors.com.epicgames.modules.gamesubcatalog.purchase_not_allowed" {
-		err = database.UpdateRemainingGifts(db, accountID, 0)
-		if err != nil {
-			fmt.Println("Error updating remaining gifts in database:", err)
-			return nil, (fmt.Errorf("could not update remaining gifts in database: %s", err))
+	// Per-account gift cap: the account genuinely cannot send more for 24h.
+	// Record it the same way a real gift would so the cooldown is tracked.
+	if epicErr.ErrorCode == "errors.com.epicgames.modules.gamesubcatalog.purchase_not_allowed" {
+		if uerr := database.UpdateRemainingGifts(db, accountID, 0); uerr != nil {
+			fmt.Printf("could not zero remaining gifts for %s: %v\n", accountID, uerr)
 		}
-
-		for range 5 {
-			err = database.AddTransaction(db, types.Transaction{
+		for i := 0; i < 5; i++ {
+			_ = database.AddTransaction(db, types.Transaction{
 				ID:              uuid.New(),
 				GameAccountID:   accountID,
 				SenderName:      senderName,
 				ReceiverID:      &receiverUserID,
-				ReceiverName:    nil,
 				ObjectStoreID:   giftItem,
 				ObjectStoreName: "External Gift",
 				RegularPrice:    float64(giftPrice),
@@ -534,24 +476,14 @@ func sendGiftRequest(db *sql.DB, accountIDStr string, accountID uuid.UUID, recei
 				GiftImage:       "",
 				CreatedAt:       time.Now(),
 			})
-			if err != nil {
-				fmt.Println("Error adding external transaction:", err)
-				return nil, (fmt.Errorf("failed to add external transaction: %s", err))
-			}
 		}
-
-		msg := fmt.Sprintf("no remaining gifts available: %s", errorResponse["errorMessage"])
-		fmt.Println(msg)
-		return nil, (fmt.Errorf("%s", msg))
+		return fmt.Errorf("esta cuenta no tiene envíos disponibles por ahora (Epic: %s)", strings.TrimSpace(epicErr.ErrorMessage))
 	}
 
-	if resp.StatusCode < 200 || resp.StatusCode > 204 {
-		msg := fmt.Sprintf("failed to send gift, status code: %d", resp.StatusCode)
-		fmt.Println(msg)
-		return nil, (fmt.Errorf("%s", msg))
+	if epicErr.ErrorMessage != "" {
+		return fmt.Errorf("Epic rechazó el regalo [%s]: %s", epicErr.ErrorCode, epicErr.ErrorMessage)
 	}
-
-	return nil, nil
+	return fmt.Errorf("Epic rechazó el regalo (HTTP %d)", resp.StatusCode)
 }
 
 func SmartUpdatePavos(db *sql.DB, accountID uuid.UUID, pavos int) error {

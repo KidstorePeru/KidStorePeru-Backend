@@ -442,6 +442,20 @@ func RefreshAccessToken(refreshToken string, db *sql.DB) (types.LoginResultRespo
 	return tokenResult, nil
 }
 
+// rewindRequestBody resets request.Body so the request can be sent again after
+// the first client.Do drained it. This matters for requests that carry a body
+// (the gift POST): without it, the retry after a token refresh would send an
+// empty body and Epic would reject the gift. http.NewRequest populates GetBody
+// for bytes/strings readers, which is what the callers use.
+func rewindRequestBody(request *http.Request) {
+	if request.Body == nil || request.GetBody == nil {
+		return
+	}
+	if body, err := request.GetBody(); err == nil {
+		request.Body = body
+	}
+}
+
 func ExecuteOperationWithRefresh(request *http.Request, db *sql.DB, GameAccountID uuid.UUID, source string) (*http.Response, error) {
 	//pavosSource := source == "pavos"
 
@@ -516,6 +530,7 @@ func ExecuteOperationWithRefresh(request *http.Request, db *sql.DB, GameAccountI
 				request.Header.Set("Authorization", "Bearer "+newTokens.AccessToken)
 			}
 
+			rewindRequestBody(request)
 			resp, err = client.Do(request)
 			if err != nil {
 				fmt.Printf("Retry request after token refresh failed for account %s: %v\n", GameAccount.ID, err)
@@ -585,6 +600,7 @@ func ExecuteOperationWithRefresh(request *http.Request, db *sql.DB, GameAccountI
 			request.Header.Set("Authorization", "Bearer "+newTokens.AccessToken)
 		}
 
+		rewindRequestBody(request)
 		resp, err = client.Do(request)
 		if err != nil {
 			fmt.Printf("Retry request after device auth failed for account %s: %v\n", GameAccount.ID, err)
