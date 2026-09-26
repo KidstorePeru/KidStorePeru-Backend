@@ -68,6 +68,12 @@ func HandlerSendGift(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		// Read the account from Epic first so gifts sent from inside the game are
+		// already counted in the slot check below. Best effort (a failure here is
+		// not fatal) and skipped if the account was read a moment ago. It takes
+		// the account lock itself, so it must run before we lock it.
+		freshenBeforeGift(db, AccountId)
+
 		// Serialize gifts for this account so concurrent requests can't both
 		// pass the slot check below.
 		unlock := lockAccount(AccountId)

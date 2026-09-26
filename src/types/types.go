@@ -21,7 +21,7 @@ type EnvConfigType struct {
 	Epic_secret            string `envconfig:"EPIC_SECRET" default:""`
 	// Every PAVOS_SYNC_MINUTES the real pavos (and gift history) of each linked
 	// account are read from Epic. 0 disables the periodic sync.
-	PavosSyncMinutes int `envconfig:"PAVOS_SYNC_MINUTES" default:"30"`
+	PavosSyncMinutes int `envconfig:"PAVOS_SYNC_MINUTES" default:"10"`
 	// Reconcile the 24h gift cooldown with the gifts Epic says the account sent.
 	GiftHistorySync bool `envconfig:"GIFT_HISTORY_SYNC" default:"true"`
 
