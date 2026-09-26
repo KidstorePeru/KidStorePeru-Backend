@@ -68,6 +68,12 @@ func HandlerSendGift(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		// Read the account from Epic first so gifts sent from inside the game are
+		// already counted in the slot check below. Best effort (a failure here is
+		// not fatal) and skipped if the account was read a moment ago. It takes
+		// the account lock itself, so it must run before we lock it.
+		freshenBeforeGift(db, AccountId)
+
 		// Serialize gifts for this account so concurrent requests can't both
 		// pass the slot check below.
 		unlock := lockAccount(AccountId)
@@ -372,6 +378,12 @@ func HandlerRefreshPavosForAccount(db *sql.DB) gin.HandlerFunc {
 			}
 			c.JSON(http.StatusBadGateway, resp)
 			return
+		}
+
+		// Also keep the friend-list count fresh (at most every 2 minutes);
+		// best effort, it never fails the refresh.
+		if _, ferr := RefreshFriendsState(db, accountID, 2*time.Minute); ferr != nil {
+			fmt.Printf("Friend count for %s: %v\n", accountID, ferr)
 		}
 
 		data := gin.H{

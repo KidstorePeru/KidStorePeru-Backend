@@ -329,6 +329,11 @@ func buildSimplifiedAccounts(db *sql.DB, gameAccounts []types.GameAccount) []typ
 		fmt.Printf("Could not read pavos sync times: %v\n", err)
 	}
 
+	friendsMap, err := database.GetFriendsStates(db, accountIDs)
+	if err != nil {
+		fmt.Printf("Could not read friend-list states: %v\n", err)
+	}
+
 	result := make([]types.SimplifiedAccount, 0, len(gameAccounts))
 	for _, account := range gameAccounts {
 		accountIDStr, err := utils.ConvertUUIDToString(account.ID)
@@ -357,6 +362,11 @@ func buildSimplifiedAccounts(db *sql.DB, gameAccounts []types.GameAccount) []typ
 		if t, found := syncedAt[account.ID]; found {
 			t := t
 			dto.PavosSyncedAt = &t
+		}
+		dto.FriendsMax = utils.Config.MaxFriends
+		if st, found := friendsMap[account.ID]; found {
+			dto.FriendsCount = st.Count
+			dto.FriendsFull = st.Full
 		}
 		result = append(result, dto)
 	}

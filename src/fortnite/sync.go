@@ -184,6 +184,23 @@ func scheduleSyncAfterGift(db *sql.DB, accountID uuid.UUID) {
 	}
 }
 
+// freshenMaxAge is how recent a sync must be for freshenBeforeGift to skip it.
+const freshenMaxAge = 20 * time.Second
+
+// freshenBeforeGift syncs the account with Epic unless it was synced within
+// freshenMaxAge. Errors are logged and ignored: the gift attempt itself will
+// report any real credential problem.
+func freshenBeforeGift(db *sql.DB, accountID uuid.UUID) {
+	if m, err := database.GetPavosSyncedAt(db, []uuid.UUID{accountID}); err == nil {
+		if t, ok := m[accountID]; ok && time.Since(t) < freshenMaxAge {
+			return
+		}
+	}
+	if _, err := SyncAccountFromEpic(db, accountID); err != nil {
+		fmt.Printf("Pre-gift sync for %s: %v\n", accountID, err)
+	}
+}
+
 // describeAccountError turns a low-level error into a short operator message.
 func describeAccountError(err error) string {
 	switch {

@@ -215,13 +215,15 @@ func refreshAccountToken(db *sql.DB, accountID uuid.UUID, staleToken string) (st
 		return "", err
 	}
 
-	var lastErr error
+	var lastErr, deviceErr error
+	hadDeviceAuth := false
 	credentialsRejected := true // flips to false if any failure could be transient
 
 	// 1) Device auth: long-lived and not single-use, preferred when available.
 	secrets, serr := database.GetGameAccountSecrets(db, hexID)
 	switch {
 	case serr == nil:
+		hadDeviceAuth = true
 		tokens, err := grantDeviceAuth(secrets)
 		if err == nil {
 			if err := saveTokens(db, accountID, tokens); err != nil {
@@ -229,7 +231,7 @@ func refreshAccountToken(db *sql.DB, accountID uuid.UUID, staleToken string) (st
 			}
 			return tokens.AccessToken, nil
 		}
-		lastErr = err
+		lastErr, deviceErr = err, err
 		if !isCredentialRejection(err) {
 			credentialsRejected = false
 		}
@@ -247,6 +249,9 @@ func refreshAccountToken(db *sql.DB, accountID uuid.UUID, staleToken string) (st
 			if err := saveTokens(db, accountID, tokens); err != nil {
 				return "", fmt.Errorf("could not store refreshed tokens: %w", err)
 			}
+			if !hadDeviceAuth {
+				ensureDeviceAuth(db, acc, hexID, tokens.AccessToken)
+			}
 			return tokens.AccessToken, nil
 		}
 		lastErr = err
@@ -259,7 +264,7 @@ func refreshAccountToken(db *sql.DB, accountID uuid.UUID, staleToken string) (st
 		lastErr = fmt.Errorf("no credentials available to refresh the token")
 	}
 	if credentialsRejected {
-		fmt.Printf("Account %s: Epic rejected the stored credentials (%v) - it must be linked again\n", accountID, lastErr)
+		fmt.Printf("Account %s: Epic rejected the stored credentials (had device auth: %v, device auth error: %v, last error: %v) - it must be linked again\n", accountID, hadDeviceAuth, deviceErr, lastErr)
 		return "", fmt.Errorf("%w (Epic: %v)", ErrNeedsRelink, lastErr)
 	}
 	fmt.Printf("Account %s: could not refresh token (will retry later): %v\n", accountID, lastErr)
@@ -355,4 +360,25 @@ func rewindRequestBody(request *http.Request) {
 	if body, err := request.GetBody(); err == nil {
 		request.Body = body
 	}
+}
+
+// ensureDeviceAuth gives an account that only had a refresh token permanent
+// device-auth credentials, so it no longer depends on a token that Epic can
+// revoke (e.g. when the account signs in to the game). Best effort.
+func ensureDeviceAuth(db *sql.DB, acc types.GameAccount, hexID, accessToken string) {
+	secrets, err := createDeviceAuth(hexID, accessToken)
+	if err != nil {
+		fmt.Printf("Account %s: could not create device auth: %v\n", acc.ID, err)
+		return
+	}
+	if err := database.UpsertGameAccountSecrets(db, types.GameAccountSecrets{
+		Owner_user_id: acc.OwnerUserID,
+		DeviceId:      secrets.DeviceId,
+		AccountId:     hexID,
+		Secret:        secrets.Secret,
+	}); err != nil {
+		fmt.Printf("Account %s: could not save device auth: %v\n", acc.ID, err)
+		return
+	}
+	fmt.Printf("Account %s: device auth created, it no longer depends on the refresh token\n", acc.ID)
 }

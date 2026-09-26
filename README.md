@@ -32,7 +32,7 @@ All configuration comes from the environment (or `.env` locally). See
 
 ### Real pavos and gift history
 
-When an account is linked, and then every `PAVOS_SYNC_MINUTES` (default 30, `0`
+When an account is linked, and then every `PAVOS_SYNC_MINUTES` (default 10, `0`
 disables it), the backend reads the account's `common_core` profile from Epic:
 
 - **Pavos**: sum of the spendable `Currency:MtxPurchased` / `MtxPurchaseBonus`

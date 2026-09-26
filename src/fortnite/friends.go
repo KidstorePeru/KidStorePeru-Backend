@@ -194,7 +194,9 @@ func acceptFriendRequests(db *sql.DB, gameAccount types.GameAccount, friends []t
 		if err := postFriendship(db, gameAccount.ID, hexID, friend.AccountID, "acceptFriend"); err != nil {
 			lastErr = err
 			fmt.Printf("Failed to accept friend request from %s: %v\n", friend.AccountID, err)
-			if errors.Is(err, ErrNeedsRelink) {
+			// Nothing else can succeed now: bad credentials, our friend list is
+			// full, or Epic is throttling us. Stop instead of hammering Epic.
+			if errors.Is(err, ErrNeedsRelink) || isFriendsFullError(err) || isThrottledError(err) {
 				return accepted, err
 			}
 			continue
@@ -328,6 +330,10 @@ func StartFriendRequestHandler(db *sql.DB, intervalSeconds int) {
 	if intervalSeconds <= 0 {
 		intervalSeconds = 60
 	}
+	// Polling every few seconds over all accounts got Epic to throttle us (429).
+	if intervalSeconds < 15 {
+		intervalSeconds = 15
+	}
 	for {
 		time.Sleep(time.Duration(intervalSeconds) * time.Second)
 
@@ -337,24 +343,84 @@ func StartFriendRequestHandler(db *sql.DB, intervalSeconds int) {
 			continue
 		}
 
+		states := map[uuid.UUID]database.FriendsState{}
+		ids := make([]uuid.UUID, 0, len(gameAccounts))
+		for _, a := range gameAccounts {
+			ids = append(ids, a.ID)
+		}
+		if m, serr := database.GetFriendsStates(db, ids); serr == nil {
+			states = m
+		}
+
 		for _, account := range gameAccounts {
-			sleepJitter(time.Second, 2*time.Second) // avoid rate limiting
+			processFriendRequests(db, account, states[account.ID])
+		}
+	}
+}
 
-			friendRequests, err := getIncomingRequests(db, account)
-			if err != nil {
-				fmt.Printf("Failed to get friend requests for account %s: %v\n", account.DisplayName, err)
-				continue
-			}
-			if len(friendRequests) == 0 {
-				continue
-			}
+// processFriendRequests accepts the pending requests of one account, unless its
+// friend list is full (then it only re-checks now and then, so it resumes by
+// itself once friends are removed by hand).
+func processFriendRequests(db *sql.DB, account types.GameAccount, st database.FriendsState) {
+	sleepJitter(time.Second, 2*time.Second) // avoid rate limiting
 
-			accepted, err := acceptFriendRequests(db, account, friendRequests)
-			if err != nil {
-				fmt.Printf("Account %s: accepted %d of %d friend requests (last error: %v)\n", account.DisplayName, accepted, len(friendRequests), err)
-			} else {
-				fmt.Printf("Accepted %d friend requests for account %s\n", accepted, account.DisplayName)
+	stale := friendsCheckDue(account.ID, st)
+	if st.Full && !stale {
+		return // full and checked recently: do not bother Epic
+	}
+	if stale {
+		friendsAttempts.Store(account.ID, time.Now())
+		// Refresh the count (also detects that friends were removed).
+		full, err := RefreshFriendsState(db, account.ID, 0)
+		switch {
+		case err == nil && full:
+			fmt.Printf("Account %s has a full friend list, skipping automatic accepting\n", account.DisplayName)
+			return
+		case err != nil:
+			// Count unavailable: fall through and let the accept itself tell.
+			if errors.Is(err, ErrNeedsRelink) {
+				return
 			}
+			if st.Full && isThrottledError(err) {
+				return
+			}
+		}
+	}
+
+	friendRequests, err := getIncomingRequests(db, account)
+	if err != nil {
+		fmt.Printf("Failed to get friend requests for account %s: %v\n", account.DisplayName, err)
+		return
+	}
+	if len(friendRequests) == 0 {
+		if st.Full && stale {
+			// Nothing pending, so it cannot be proven either way; keep the flag.
+			_ = database.SetFriendsFull(db, account.ID, true)
+		}
+		return
+	}
+
+	accepted, err := acceptFriendRequests(db, account, friendRequests)
+	switch {
+	case err != nil && isFriendsFullError(err):
+		_ = database.SetFriendsFull(db, account.ID, true)
+		fmt.Printf("Account %s reached its friend limit (accepted %d): automatic accepting paused until friends are removed\n", account.DisplayName, accepted)
+	case err != nil && isThrottledError(err):
+		fmt.Printf("Account %s: Epic is throttling (accepted %d of %d), will continue next round\n", account.DisplayName, accepted, len(friendRequests))
+		time.Sleep(5 * time.Second)
+	case err != nil:
+		fmt.Printf("Account %s: accepted %d of %d friend requests (last error: %v)\n", account.DisplayName, accepted, len(friendRequests), err)
+	default:
+		fmt.Printf("Accepted %d friend requests for account %s\n", accepted, account.DisplayName)
+	}
+	if accepted > 0 {
+		if !isFriendsFullError(err) {
+			_ = database.SetFriendsFull(db, account.ID, false)
+		}
+		// Update the shown count right away (also flags the account as full when
+		// this batch used the last free slots).
+		if _, rerr := RefreshFriendsState(db, account.ID, 0); rerr != nil && !isFriendsFullError(err) {
+			fmt.Printf("Could not refresh friend count for %s: %v\n", account.DisplayName, rerr)
 		}
 	}
 }
