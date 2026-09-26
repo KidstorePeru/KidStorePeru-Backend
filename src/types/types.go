@@ -19,7 +19,11 @@ type EnvConfigType struct {
 	AcceptFriendsInSeconds int    `envconfig:"ACCEPT_FRIENDS_IN_SECONDS" default:"5"`
 	Epic_client            string `envconfig:"EPIC_CLIENT" default:""`
 	Epic_secret            string `envconfig:"EPIC_SECRET" default:""`
-	Fetch_pavos            bool   `envconfig:"FETCH_PAVOS" default:"true"`
+	// Every PAVOS_SYNC_MINUTES the real pavos (and gift history) of each linked
+	// account are read from Epic. 0 disables the periodic sync.
+	PavosSyncMinutes int `envconfig:"PAVOS_SYNC_MINUTES" default:"30"`
+	// Reconcile the 24h gift cooldown with the gifts Epic says the account sent.
+	GiftHistorySync bool `envconfig:"GIFT_HISTORY_SYNC" default:"true"`
 
 	// Comma-separated list of origins allowed by CORS.
 	AllowedOrigins []string `envconfig:"ALLOWED_ORIGINS" default:"http://localhost:5173,http://localhost:3000,https://kidstoreperu-frontend-react-production.up.railway.app,chrome-extension://gmmkjpcadciiokjpikmkkmapphbmdjok"`
@@ -160,6 +164,8 @@ type SimplifiedAccount struct {
 	Pavos          int                    `json:"pavos"`
 	RemainingGifts int                    `json:"remainingGifts"`
 	GiftSlotStatus map[string]interface{} `json:"giftSlotStatus,omitempty"`
+	// PavosSyncedAt is when the pavos were last read from Epic (absent if never).
+	PavosSyncedAt *time.Time `json:"pavosSyncedAt,omitempty"`
 }
 
 type GameFriendRequest struct {

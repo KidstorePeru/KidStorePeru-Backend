@@ -2,9 +2,9 @@ package page
 
 import (
 	database "KidStoreBotBE/src/db"
-	"KidStoreBotBE/src/fortnite"
 	"KidStoreBotBE/src/types"
 	"KidStoreBotBE/src/utils"
+	"crypto/subtle"
 	"database/sql"
 	"fmt"
 	"net/http"
@@ -16,32 +16,57 @@ import (
 	"github.com/google/uuid"
 )
 
+// Login throttling: at most 8 failures per (IP, user) and 40 per user in 10
+// minutes. The per-user cap is much higher so an attacker cannot lock the real
+// operator out with a handful of guesses.
+var (
+	loginLimiterIPUser = utils.NewAttemptLimiter(8, 10*time.Minute)
+	loginLimiterUser   = utils.NewAttemptLimiter(40, 10*time.Minute)
+)
+
 func HandlerLoginForm(db *sql.DB, adminUsername string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if !utils.FetchPavos {
-			//print true
-			fmt.Println("FetchPavos is false")
-		}
 		var form types.Login
 		if err := c.ShouldBind(&form); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Usuario y contraseña son requeridos"})
 			return
 		}
 
-		//Get user from db
-		dbuser, err := database.GetUserByUsername(db, form.User)
-		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Invalid credentials", "details": err.Error()})
+		user := strings.ToLower(strings.TrimSpace(form.User))
+		ipUserKey := c.ClientIP() + "|" + user
+		if !loginLimiterIPUser.Allow(ipUserKey) || !loginLimiterUser.Allow(user) {
+			c.JSON(http.StatusTooManyRequests, gin.H{"success": false, "error": "Demasiados intentos fallidos. Espera unos minutos e inténtalo de nuevo."})
 			return
 		}
-		dbUserIDStr, err := utils.ConvertUUIDToString(dbuser.ID)
+
+		fail := func() {
+			loginLimiterIPUser.Fail(ipUserKey)
+			loginLimiterUser.Fail(user)
+			// Same answer whether the user exists or not.
+			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Invalid credentials"})
+		}
+
+		dbuser, err := database.GetUserByUsername(db, form.User)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Invalid user ID"})
+			if err == sql.ErrNoRows {
+				utils.BurnPasswordCheck(form.Password) // don't reveal which usernames exist by timing
+				fail()
+				return
+			}
+			fmt.Printf("Login: database error: %v\n", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Error interno. Inténtalo de nuevo."})
 			return
 		}
 
 		if !passwordMatches(db, dbuser, form.Password) {
-			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Invalid Password"})
+			fail()
+			return
+		}
+		loginLimiterIPUser.Reset(ipUserKey)
+
+		dbUserIDStr, err := utils.ConvertUUIDToString(dbuser.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Invalid user ID"})
 			return
 		}
 
@@ -54,12 +79,8 @@ func HandlerLoginForm(db *sql.DB, adminUsername string) gin.HandlerFunc {
 			tokenString, err = utils.CreateToken(dbuser.Username, dbUserIDStr)
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not create token", "details": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not create token"})
 			return
-		}
-
-		if utils.FetchPavos {
-			fortnite.UpdatePavosForUser(db, dbuser.ID, isAdmin)
 		}
 
 		c.JSON(http.StatusOK, gin.H{"success": true, "token": tokenString})
@@ -74,7 +95,7 @@ func passwordMatches(db *sql.DB, dbuser types.User, attempt string) bool {
 		return utils.CheckPassword(dbuser.Password, attempt)
 	}
 
-	if dbuser.Password != attempt {
+	if subtle.ConstantTimeCompare([]byte(dbuser.Password), []byte(attempt)) != 1 {
 		return false
 	}
 
@@ -303,6 +324,11 @@ func buildSimplifiedAccounts(db *sql.DB, gameAccounts []types.GameAccount) []typ
 		remainingGiftsMap = make(map[uuid.UUID]int)
 	}
 
+	syncedAt, err := database.GetPavosSyncedAt(db, accountIDs)
+	if err != nil {
+		fmt.Printf("Could not read pavos sync times: %v\n", err)
+	}
+
 	result := make([]types.SimplifiedAccount, 0, len(gameAccounts))
 	for _, account := range gameAccounts {
 		accountIDStr, err := utils.ConvertUUIDToString(account.ID)
@@ -310,23 +336,29 @@ func buildSimplifiedAccounts(db *sql.DB, gameAccounts []types.GameAccount) []typ
 			continue
 		}
 
-		// Use the minimum of the calculated and stored counts so manual
-		// downward adjustments are respected; never go negative.
-		remaining := remainingGiftsMap[account.ID]
-		if account.RemainingGifts < remaining {
+		// The 24h transaction history is the single source of truth for the
+		// gift cooldown; the stored counter is only a fallback if the batch
+		// calculation failed (mixing both used to leave phantom "used" slots).
+		remaining, ok := remainingGiftsMap[account.ID]
+		if !ok {
 			remaining = account.RemainingGifts
 		}
 		if remaining < 0 {
 			remaining = 0
 		}
 
-		result = append(result, types.SimplifiedAccount{
+		dto := types.SimplifiedAccount{
 			ID:             accountIDStr,
 			DisplayName:    account.DisplayName,
 			Pavos:          account.PaVos,
 			RemainingGifts: remaining,
 			GiftSlotStatus: giftSlotStatusMap[account.ID],
-		})
+		}
+		if t, found := syncedAt[account.ID]; found {
+			t := t
+			dto.PavosSyncedAt = &t
+		}
+		result = append(result, dto)
 	}
 	return result
 }
@@ -337,7 +369,7 @@ func HandlerGetTransactionsAdmin(db *sql.DB) gin.HandlerFunc {
 		if result != 200 {
 			return
 		}
-		rows, err := db.Query(`SELECT id, game_account_id, sender_name, receiver_id, receiver_username, object_store_id, object_store_name, regular_price, final_price, gift_image, created_at FROM transactions`)
+		rows, err := db.Query(`SELECT id, game_account_id, sender_name, receiver_id, receiver_username, object_store_id, object_store_name, regular_price, final_price, gift_image, created_at FROM transactions ORDER BY created_at ASC`)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not fetch transactions", "details": err.Error()})
 			return

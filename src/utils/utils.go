@@ -104,3 +104,10 @@ func ConvertUUIDToString(uuidValue uuid.UUID) (string, error) {
 	}
 	return strings.ReplaceAll(uuidValue.String(), "-", ""), nil
 }
+
+// SetSigningKey replaces the JWT signing key. The server never needs it (the
+// key comes from SECRET_KEY at startup); it exists so tests in other packages
+// can issue tokens.
+func SetSigningKey(key string) {
+	secretKey = []byte(key)
+}

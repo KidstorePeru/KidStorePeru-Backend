@@ -30,6 +30,31 @@ All configuration comes from the environment (or `.env` locally). See
 `DB_HOST` `DB_PORT` `DB_USER` `DB_PASSWORD` `DB_NAME` `SECRET_KEY`
 `EPIC_CLIENT` `EPIC_SECRET`
 
+### Real pavos and gift history
+
+When an account is linked, and then every `PAVOS_SYNC_MINUTES` (default 30, `0`
+disables it), the backend reads the account's `common_core` profile from Epic:
+
+- **Pavos**: sum of the spendable `Currency:MtxPurchased` / `MtxPurchaseBonus`
+  balances (platform-locked and Save-the-World V-Bucks are excluded). The value
+  replaces whatever is stored, including manual edits, so the number shown is
+  always what Epic reports; the manual +/- tools still exist for when Epic
+  cannot be reached.
+- **Gifts sent** (`GIFT_HISTORY_SYNC`): gifts an account sent from inside the
+  game are added to the 24h cooldown with their real time. Only ever adds
+  information: web gifts are matched (±30 min) and never duplicated, and an
+  implausible history (>10 gifts / 24h) is ignored.
+
+After every gift the account is re-read from Epic (6 s and 60 s later). Epic
+calls are spaced out and use one shared, per-account serialized token refresh.
+A failed or malformed Epic response never overwrites stored data.
+
+## Tests
+
+`go test ./...` runs unit tests plus integration tests against a throw-away
+PostgreSQL (downloaded and started automatically by `src/testutil`) and a fake
+Epic server. Set `SKIP_PG_TESTS=1` to run only the unit tests.
+
 ## Layout
 
 ```

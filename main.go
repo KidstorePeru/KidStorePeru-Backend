@@ -1,6 +1,7 @@
 package main
 
 import (
+	database "KidStoreBotBE/src/db"
 	"KidStoreBotBE/src/fortnite"
 	page "KidStoreBotBE/src/page"
 	"KidStoreBotBE/src/utils"
@@ -50,7 +51,20 @@ func main() {
 		panic(err)
 	}
 
+	if err := database.EnsureSchema(db); err != nil {
+		// Not fatal: the app works without the new column, it just cannot show
+		// when the pavos were last synced.
+		fmt.Printf("Warning: %v\n", err)
+	}
+	// Refresh the stored gift counters right away (the startup cleanup may have
+	// removed phantom rows that were blocking gift slots).
+	if err := database.UpdateAllRemainingGifts(db); err != nil {
+		fmt.Printf("Warning: could not refresh gift counters: %v\n", err)
+	}
+
 	router := gin.Default() // includes Logger + Recovery
+	router.Use(utils.SecurityHeaders())
+	router.Use(utils.LimitBodySize(1 << 20)) // 1 MiB is far more than any JSON we accept
 
 	allowedOrigins := make(map[string]bool, len(cfg.AllowedOrigins))
 	for _, origin := range cfg.AllowedOrigins {
@@ -79,21 +93,6 @@ func main() {
 	})
 
 	authorized.GET("/protected", func(c *gin.Context) {
-		result := utils.ProtectedEndpointHandler(c)
-		if result != 200 {
-			return
-		}
-		_, dUserID, err := utils.GetUserIdFromToken(c)
-		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": err.Error()})
-			return
-		}
-		IsTokenAdmin := utils.IsTokenAdmin(c)
-		if IsTokenAdmin {
-			fortnite.UpdatePavosForUser(db, dUserID, true)
-		} else {
-			fortnite.UpdatePavosForUser(db, dUserID, false)
-		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "message": "Welcome to the protected area"})
 	})
 
@@ -124,13 +123,19 @@ func main() {
 	authorized.GET("/transactions", page.HandlerGetTransactionsByAccount(db))
 	authorized.GET("/alltransactions", page.HandlerGetTransactionsAdmin(db))
 
-	go fortnite.StartFriendRequestHandler(db, cfg.AcceptFriendsInSeconds)
-	go fortnite.UpdateRemainingGiftsInAccounts(db)
+	fortnite.GoSafe("friend-requests", func() { fortnite.StartFriendRequestHandler(db, cfg.AcceptFriendsInSeconds) })
+	fortnite.GoSafe("gift-slots", func() { fortnite.UpdateRemainingGiftsInAccounts(db) })
+	fortnite.GoSafe("pavos-sync", func() {
+		fortnite.StartPavosSync(db, time.Duration(cfg.PavosSyncMinutes)*time.Minute)
+	})
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port_HTTP,
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 16,
 	}
 
 	go func() {

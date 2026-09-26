@@ -19,7 +19,6 @@ var Config types.EnvConfigType
 var (
 	EpicClient string
 	EpicSecret string
-	FetchPavos bool
 )
 
 func init() {
@@ -38,7 +37,6 @@ func init() {
 	secretKey = []byte(Config.SecretKey)
 	EpicClient = Config.Epic_client
 	EpicSecret = Config.Epic_secret
-	FetchPavos = Config.Fetch_pavos
 }
 
 // ValidateConfig checks that the required configuration is present. Call it from

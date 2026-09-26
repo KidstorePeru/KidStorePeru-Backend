@@ -6,9 +6,11 @@ import (
 	"KidStoreBotBE/src/utils"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"math/rand/v2"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -16,10 +18,40 @@ import (
 	"github.com/google/uuid"
 )
 
+// giftFriendshipMinAge is how long two accounts must have been friends before
+// Epic allows a gift between them.
+const giftFriendshipMinAge = 48 * time.Hour
+
+// lookupAccountByDisplayName resolves an Epic display name to an account id and
+// canonical display name, using the given game account's credentials.
+func lookupAccountByDisplayName(db *sql.DB, viaAccount uuid.UUID, displayName string) (types.PublicAccountResult, error) {
+	endpoint := fmt.Sprintf("%s/account/api/public/account/displayName/%s", epicAccountBase, url.PathEscape(displayName))
+	request, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return types.PublicAccountResult{}, err
+	}
+	resp, err := ExecuteOperationWithRefresh(request, db, viaAccount, "displayNameLookup")
+	if err != nil {
+		return types.PublicAccountResult{}, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return types.PublicAccountResult{}, parseEpicError(resp.StatusCode, body)
+	}
+	var result types.PublicAccountResult
+	if err := json.Unmarshal(body, &result); err != nil || result.AccountId == "" {
+		return types.PublicAccountResult{}, fmt.Errorf("respuesta inválida de Epic al buscar al jugador")
+	}
+	return result, nil
+}
+
+// HandlerSearchOnlineFortniteAccount looks a player up by display name and
+// reports whether they are a friend of the account long enough to be gifted.
 func HandlerSearchOnlineFortniteAccount(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		result := utils.ProtectedEndpointHandler(c)
-		if result != 200 {
+		if utils.ProtectedEndpointHandler(c) != http.StatusOK {
 			return
 		}
 
@@ -28,15 +60,20 @@ func HandlerSearchOnlineFortniteAccount(db *sql.DB) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
 			return
 		}
+		req.DisplayName = strings.TrimSpace(req.DisplayName)
+		if req.DisplayName == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Escribe el nombre del jugador"})
+			return
+		}
 
-		AccountID, err := uuid.Parse(req.AccountId)
+		accountID, err := uuid.Parse(req.AccountId)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid account ID format"})
 			return
 		}
 
 		// Only the account owner (or an admin) may search from this account.
-		gameAccount, err := database.GetGameAccount(db, AccountID)
+		gameAccount, err := database.GetGameAccount(db, accountID)
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "Game account not found"})
 			return
@@ -45,178 +82,171 @@ func HandlerSearchOnlineFortniteAccount(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		request, _ := http.NewRequest("GET", fmt.Sprintf("https://account-public-service-prod.ol.epicgames.com/account/api/public/account/displayName/%s", req.DisplayName), nil)
-
-		resp, err := ExecuteOperationWithRefresh(request, db, AccountID, "friendSearch")
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "No se encontro al usuario", "details": err.Error()})
-			return
-		}
-		defer resp.Body.Close()
-
-		var tokenResult types.PublicAccountResult
-		if err := json.NewDecoder(resp.Body).Decode(&tokenResult); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "No se encontro al usuario.", "details": err.Error()})
-			return
+		fail := func(status int, msg string, err error) {
+			resp := gin.H{"success": false, "error": msg}
+			if err != nil {
+				resp["details"] = describeAccountError(err)
+				if errors.Is(err, ErrNeedsRelink) {
+					resp["needs_relink"] = true
+				}
+			}
+			c.JSON(status, resp)
 		}
 
-		reqFriends, _ := http.NewRequest("GET", fmt.Sprintf("https://friends-public-service-prod.ol.epicgames.com/friends/api/v1/%s/friends/%s", req.AccountId, tokenResult.AccountId), nil)
-
-		respFriends, err := ExecuteOperationWithRefresh(reqFriends, db, AccountID, "SearchFridnd")
+		target, err := lookupAccountByDisplayName(db, accountID, req.DisplayName)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Error interno", "details": err.Error()})
+			var ee *epicError
+			if errors.As(err, &ee) && ee.Status == http.StatusNotFound {
+				fail(http.StatusNotFound, "No existe un jugador de Epic con ese nombre", nil)
+				return
+			}
+			fail(http.StatusBadGateway, "No se pudo buscar al jugador en Epic", err)
+			return
+		}
+
+		hexID, _ := utils.ConvertUUIDToString(accountID)
+		targetHex := strings.ReplaceAll(target.AccountId, "-", "")
+		reqFriends, _ := http.NewRequest("GET", fmt.Sprintf("%s/friends/api/v1/%s/friends/%s", epicFriendsBase, hexID, targetHex), nil)
+		respFriends, err := ExecuteOperationWithRefresh(reqFriends, db, accountID, "friendCheck")
+		if err != nil {
+			fail(http.StatusBadGateway, "No se pudo consultar la lista de amigos en Epic", err)
 			return
 		}
 		defer respFriends.Body.Close()
+		friendBody, _ := io.ReadAll(io.LimitReader(respFriends.Body, 1<<20))
 
-		if respFriends.StatusCode != 200 {
-			var errorResponse struct {
-				ErrorCode    string   `json:"errorCode"`
-				ErrorMessage string   `json:"errorMessage"`
-				MessageVars  []string `json:"messageVars"`
-			}
-			//print response
-			fmt.Printf("Response: %s\n", respFriends.Status)
-			fmt.Printf("Response: %s\n", respFriends.Header)
-
-			if err := json.NewDecoder(respFriends.Body).Decode(&errorResponse); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "El usuario no es amigo.", "details": err.Error()})
+		if respFriends.StatusCode != http.StatusOK {
+			ee := parseEpicError(respFriends.StatusCode, friendBody)
+			if ee.Status == http.StatusNotFound && strings.Contains(ee.Code, "friendship_not_found") {
+				c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "El usuario no está en la lista de amigos de esta cuenta", "details": ee.Message})
 				return
 			}
-			// Check if the error code is "errors.com.epicgames.friends.friendship_not_found"
-			if respFriends.StatusCode == 404 && errorResponse.ErrorCode == "errors.com.epicgames.friends.friendship_not_found" {
-				c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "El usuario no esta en la lista de amigos", "details": errorResponse.ErrorMessage})
-				return
-			}
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not get client token", "details": errorResponse.ErrorMessage})
+			fail(http.StatusBadGateway, "Epic no pudo confirmar la amistad", ee)
 			return
 		}
 
 		var friendResult types.FriendResult
-		if err := json.NewDecoder(respFriends.Body).Decode(&friendResult); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Usuario no encontrado", "details": err.Error()})
+		if err := json.Unmarshal(friendBody, &friendResult); err != nil {
+			fail(http.StatusBadGateway, "Respuesta inválida de Epic al consultar la amistad", err)
 			return
 		}
-		//check if the account is in the friends list for more than 48 hours
-		//if friendResult.Created > 48 hours
 		friendCreated, err := time.Parse(time.RFC3339, friendResult.Created)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Invalid friend created date", "details": err.Error()})
-			return
-		}
-		friendCreatedStr := friendCreated.Format("02/01/2006 15:04") + " GMT-5"
-
-		if time.Since(friendCreated) > 48*time.Hour {
-			c.JSON(http.StatusOK, gin.H{"success": true, "giftable": true, "friend": true, "user": true, "accountId": tokenResult.AccountId, "displayName": tokenResult.DisplayName, "created": friendCreatedStr})
+			fail(http.StatusBadGateway, "Fecha de amistad inválida en la respuesta de Epic", err)
 			return
 		}
 
-		// Friend for less than 48h — Epic won't allow a gift yet.
-		hoursLeft := int(48 - time.Since(friendCreated).Hours())
-		c.JSON(http.StatusOK, gin.H{
+		age := time.Since(friendCreated)
+		reply := gin.H{
 			"success":     true,
-			"giftable":    false,
+			"giftable":    age > giftFriendshipMinAge,
 			"friend":      true,
 			"user":        true,
-			"accountId":   tokenResult.AccountId,
-			"displayName": tokenResult.DisplayName,
-			"created":     friendCreatedStr,
-			"error":       fmt.Sprintf("Deben ser amigos por 48 horas antes de poder enviar un regalo (faltan ~%d h)", hoursLeft),
-		})
+			"accountId":   target.AccountId,
+			"displayName": target.DisplayName,
+			"created":     friendCreated.Format("02/01/2006 15:04") + " GMT-5",
+		}
+		if age <= giftFriendshipMinAge {
+			hoursLeft := int((giftFriendshipMinAge - age).Hours()) + 1
+			reply["error"] = fmt.Sprintf("Deben ser amigos por 48 horas antes de poder enviar un regalo (faltan ~%d h)", hoursLeft)
+		}
+		c.JSON(http.StatusOK, reply)
 	}
 }
 
-// TODO
 func getIncomingRequests(db *sql.DB, gameAccount types.GameAccount) ([]types.FriendRequest, error) {
-	//parse gameAccount.ID to string
-
-	AccountIDStr, err := utils.ConvertUUIDToString(gameAccount.ID)
+	hexID, err := utils.ConvertUUIDToString(gameAccount.ID)
 	if err != nil {
-		return nil, fmt.Errorf("invalid game account ID: %s", err)
+		return nil, fmt.Errorf("invalid game account ID: %w", err)
 	}
 
-	request, _ := http.NewRequest("GET", fmt.Sprintf("https://friends-public-service-prod.ol.epicgames.com/friends/api/v1/%s/incoming", AccountIDStr), nil)
-
-	resp, err := ExecuteOperationWithRefresh(request, db, gameAccount.ID, "SearchFriend2")
+	request, _ := http.NewRequest("GET", fmt.Sprintf("%s/friends/api/v1/%s/incoming", epicFriendsBase, hexID), nil)
+	resp, err := ExecuteOperationWithRefresh(request, db, gameAccount.ID, "incomingFriends")
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("failed to get incoming friend requests, status: %d", resp.StatusCode)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseEpicError(resp.StatusCode, body)
 	}
 
 	var friendRequests []types.FriendRequest
-	err = json.NewDecoder(resp.Body).Decode(&friendRequests)
-	if err != nil {
+	if err := json.Unmarshal(body, &friendRequests); err != nil {
 		return nil, err
 	}
-
+	for i := range friendRequests {
+		friendRequests[i].AccountID = strings.ReplaceAll(friendRequests[i].AccountID, "-", "")
+	}
 	return friendRequests, nil
-
 }
 
-// NOTE: This works to accept requests but also to send friend requests.
-func acceptFriendRequests(db *sql.DB, gameAccount types.GameAccount, friends []types.FriendRequest) error {
-	AccountIDStr, err := utils.ConvertUUIDToString(gameAccount.ID)
+// acceptFriendRequests accepts every pending request. One failing request does
+// not stop the others; the number accepted and the last error are returned.
+func acceptFriendRequests(db *sql.DB, gameAccount types.GameAccount, friends []types.FriendRequest) (accepted int, lastErr error) {
+	hexID, err := utils.ConvertUUIDToString(gameAccount.ID)
 	if err != nil {
-		return fmt.Errorf("invalid game account ID: %s", err)
+		return 0, fmt.Errorf("invalid game account ID: %w", err)
 	}
 
 	for _, friend := range friends {
-		request, _ := http.NewRequest("POST", fmt.Sprintf("https://friends-public-service-prod.ol.epicgames.com/friends/api/v1/%s/friends/%s", AccountIDStr, friend.AccountID), nil)
-		resp, err := ExecuteOperationWithRefresh(request, db, gameAccount.ID, "acceptFriendRequest")
-		if err != nil {
+		if err := postFriendship(db, gameAccount.ID, hexID, friend.AccountID, "acceptFriend"); err != nil {
+			lastErr = err
 			fmt.Printf("Failed to accept friend request from %s: %v\n", friend.AccountID, err)
+			if errors.Is(err, ErrNeedsRelink) {
+				return accepted, err
+			}
 			continue
 		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode == 204 || resp.StatusCode == 200 || resp.StatusCode == 201 || resp.StatusCode == 202 {
-			fmt.Printf("Accepted friend request from %s\n", friend.AccountID)
-			continue
-		}
-		return fmt.Errorf("failed to accept friend request from %s, status: %d", friend.AccountID, resp.StatusCode)
+		accepted++
+		sleepJitter(300*time.Millisecond, 500*time.Millisecond)
 	}
-	return nil
+	return accepted, lastErr
+}
+
+// postFriendship accepts a pending request from, or sends one to, targetHex.
+// (Epic uses the same call for both.)
+func postFriendship(db *sql.DB, accountID uuid.UUID, hexID, targetHex, source string) error {
+	request, _ := http.NewRequest("POST", fmt.Sprintf("%s/friends/api/v1/%s/friends/%s", epicFriendsBase, hexID, targetHex), nil)
+	resp, err := ExecuteOperationWithRefresh(request, db, accountID, source)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusCreated, http.StatusAccepted, http.StatusNoContent:
+		return nil
+	}
+	return parseEpicError(resp.StatusCode, body)
 }
 
 // sendFriendRequest sends a friend request from a game account to a target account ID
 func sendFriendRequest(db *sql.DB, gameAccount types.GameAccount, targetAccountID string) error {
-	AccountIDStr, err := utils.ConvertUUIDToString(gameAccount.ID)
+	hexID, err := utils.ConvertUUIDToString(gameAccount.ID)
 	if err != nil {
-		return fmt.Errorf("invalid game account ID: %s", err)
+		return fmt.Errorf("invalid game account ID: %w", err)
 	}
-
-	request, _ := http.NewRequest("POST", fmt.Sprintf("https://friends-public-service-prod.ol.epicgames.com/friends/api/v1/%s/friends/%s", AccountIDStr, targetAccountID), nil)
-	resp, err := ExecuteOperationWithRefresh(request, db, gameAccount.ID, "sendFriendRequest")
-	if err != nil {
-		return fmt.Errorf("failed to send friend request from %s to %s: %v", AccountIDStr, targetAccountID, err)
+	if err := postFriendship(db, gameAccount.ID, hexID, targetAccountID, "sendFriendRequest"); err != nil {
+		return fmt.Errorf("failed to send friend request from %s to %s: %w", hexID, targetAccountID, err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 204 || resp.StatusCode == 200 || resp.StatusCode == 201 || resp.StatusCode == 202 {
-		fmt.Printf("Sent friend request from %s to %s\n", AccountIDStr, targetAccountID)
-		return nil
-	}
-	return fmt.Errorf("failed to send friend request from %s to %s, status: %d", AccountIDStr, targetAccountID, resp.StatusCode)
+	return nil
 }
 
-// HandlerSendFriendRequestFromAllAccounts handles sending friend requests from all game accounts in the database to a target user by displayName
+// HandlerSendFriendRequestFromAllAccounts sends a friend request to a player
+// from every linked account (admin only).
 func HandlerSendFriendRequestFromAllAccounts(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		result := utils.ProtectedEndpointHandler(c)
-		if result != 200 {
+		if utils.ProtectedEndpointHandler(c) != http.StatusOK {
 			return
 		}
-
 		// This fans out across every connected account, so it is admin-only.
 		if !requireAdmin(c) {
 			return
 		}
 
-		// Parse request body
 		var req struct {
 			DisplayName string `json:"display_name" binding:"required"`
 		}
@@ -225,67 +255,58 @@ func HandlerSendFriendRequestFromAllAccounts(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Get all game accounts from the database
 		gameAccounts, err := database.GetAllGameAccounts(db)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not fetch game accounts", "details": err.Error()})
 			return
 		}
-
 		if len(gameAccounts) == 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "No game accounts found in database"})
 			return
 		}
 
-		// Use the first account to search for the target user by displayName
-		searchAccount := gameAccounts[0]
-		searchRequest, _ := http.NewRequest("GET", fmt.Sprintf("https://account-public-service-prod.ol.epicgames.com/account/api/public/account/displayName/%s", req.DisplayName), nil)
-
-		resp, err := ExecuteOperationWithRefresh(searchRequest, db, searchAccount.ID, "friendSearch")
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "User not found", "details": err.Error()})
-			return
-		}
-		defer resp.Body.Close()
-
+		// Resolve the player once, using the first account that can do it.
 		var targetUser types.PublicAccountResult
-		if err := json.NewDecoder(resp.Body).Decode(&targetUser); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "User not found", "details": err.Error()})
+		var lookupErr error
+		for _, acc := range gameAccounts {
+			targetUser, lookupErr = lookupAccountByDisplayName(db, acc.ID, strings.TrimSpace(req.DisplayName))
+			if lookupErr == nil {
+				break
+			}
+			var ee *epicError
+			if errors.As(lookupErr, &ee) && ee.Status == http.StatusNotFound {
+				break // the player does not exist: no point trying other accounts
+			}
+		}
+		if lookupErr != nil {
+			c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "User not found", "details": describeAccountError(lookupErr)})
 			return
 		}
 
-		// Remove hyphens from target account ID (as seen in acceptFriendRequests)
 		targetAccountID := strings.ReplaceAll(targetUser.AccountId, "-", "")
 
-		// Send friend requests from all accounts
 		var results []map[string]interface{}
-		successCount := 0
-		failureCount := 0
+		successCount, failureCount := 0, 0
 
 		for _, account := range gameAccounts {
-			// Add small delay to avoid rate limiting
-			time.Sleep(time.Duration(rand.Float32()*0.5+0.2) * time.Second)
+			sleepJitter(200*time.Millisecond, 500*time.Millisecond) // avoid rate limiting
 
 			err := sendFriendRequest(db, account, targetAccountID)
 			accountIDStr, _ := utils.ConvertUUIDToString(account.ID)
 
+			entry := map[string]interface{}{
+				"account_id":   accountIDStr,
+				"display_name": account.DisplayName,
+				"success":      err == nil,
+			}
 			if err != nil {
 				failureCount++
-				results = append(results, map[string]interface{}{
-					"account_id":   accountIDStr,
-					"display_name": account.DisplayName,
-					"success":      false,
-					"error":        err.Error(),
-				})
+				entry["error"] = describeAccountError(err)
 				fmt.Printf("Failed to send friend request from %s (%s) to %s: %v\n", account.DisplayName, accountIDStr, targetAccountID, err)
 			} else {
 				successCount++
-				results = append(results, map[string]interface{}{
-					"account_id":   accountIDStr,
-					"display_name": account.DisplayName,
-					"success":      true,
-				})
 			}
+			results = append(results, entry)
 		}
 
 		c.JSON(http.StatusOK, gin.H{
@@ -300,9 +321,13 @@ func HandlerSendFriendRequestFromAllAccounts(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// TODO
+// StartFriendRequestHandler periodically accepts the pending friend requests of
+// every linked account, so customers who added the shop's accounts become
+// friends without anyone doing it by hand. It blocks forever; run it with GoSafe.
 func StartFriendRequestHandler(db *sql.DB, intervalSeconds int) {
-
+	if intervalSeconds <= 0 {
+		intervalSeconds = 60
+	}
 	for {
 		time.Sleep(time.Duration(intervalSeconds) * time.Second)
 
@@ -313,78 +338,23 @@ func StartFriendRequestHandler(db *sql.DB, intervalSeconds int) {
 		}
 
 		for _, account := range gameAccounts {
-			//sleep for 1+random second to avoid rate limiting
-			time.Sleep(time.Duration(rand.Float32()+0.2) * time.Second)
+			sleepJitter(time.Second, 2*time.Second) // avoid rate limiting
+
 			friendRequests, err := getIncomingRequests(db, account)
-
-			//remove - from the friend requests
-			for i, friend := range friendRequests {
-				friend.AccountID = strings.ReplaceAll(friend.AccountID, "-", "")
-				friendRequests[i] = friend
-
-				//print parsed friend request
-				fmt.Printf("Parsed Friend Id: %+v\n", friend.AccountID)
-			}
-			//print friend requests again
-
 			if err != nil {
 				fmt.Printf("Failed to get friend requests for account %s: %v\n", account.DisplayName, err)
 				continue
 			}
+			if len(friendRequests) == 0 {
+				continue
+			}
 
-			if len(friendRequests) > 0 {
-				fmt.Println()
-				err := acceptFriendRequests(db, account, friendRequests)
-				if err != nil {
-					fmt.Printf("Failed to accept friend requests for account %s: %v\n", account.DisplayName, err)
-				} else {
-					fmt.Printf("Accepted %d friend requests for account %s\n", len(friendRequests), account.DisplayName)
-				}
+			accepted, err := acceptFriendRequests(db, account, friendRequests)
+			if err != nil {
+				fmt.Printf("Account %s: accepted %d of %d friend requests (last error: %v)\n", account.DisplayName, accepted, len(friendRequests), err)
+			} else {
+				fmt.Printf("Accepted %d friend requests for account %s\n", accepted, account.DisplayName)
 			}
 		}
 	}
 }
-
-// func GetEpicFriendsState(accessToken string, accountId string) ([]string, []string, error) {
-// 	client := &http.Client{Timeout: 10 * time.Second}
-
-// 	// Get incoming friend requests
-// 	req1, _ := http.NewRequest("GET", fmt.Sprintf("https://friends-public-service-prod.ol.epicgames.com/friends/api/v1/%s/incoming", accountId), nil)
-// 	req1.Header.Set("Authorization", "bearer "+accessToken)
-// 	resp1, err := client.Do(req1)
-// 	if err != nil {
-// 		return nil, nil, err
-// 	}
-// 	defer resp1.Body.Close()
-
-// 	var incoming []accountIdStr
-// 	if err := json.NewDecoder(resp1.Body).Decode(&incoming); err != nil {
-// 		return nil, nil, err
-// 	}
-
-// 	// Get existing friends
-// 	req2, _ := http.NewRequest("GET", fmt.Sprintf("https://friends-public-service-prod.ol.epicgames.com/friends/api/v1/%s/friends", accountId), nil)
-// 	req2.Header.Set("Authorization", "bearer "+accessToken)
-// 	resp2, err := client.Do(req2)
-// 	if err != nil {
-// 		return nil, nil, err
-// 	}
-// 	defer resp2.Body.Close()
-
-// 	var friends []accountIdStr
-// 	if err := json.NewDecoder(resp2.Body).Decode(&friends); err != nil {
-// 		return nil, nil, err
-// 	}
-
-// 	// Collect IDs
-// 	var incomingIDs []string
-// 	for _, f := range incoming {
-// 		incomingIDs = append(incomingIDs, f.AccountId)
-// 	}
-// 	var friendsIDs []string
-// 	for _, f := range friends {
-// 		friendsIDs = append(friendsIDs, f.AccountId)
-// 	}
-
-// 	return incomingIDs, friendsIDs, nil
-// }
