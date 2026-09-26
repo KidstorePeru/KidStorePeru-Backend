@@ -112,7 +112,10 @@ func GetGameAccountSecrets(db *sql.DB, accountId string) (types.GameAccountSecre
 	var secrets types.GameAccountSecrets
 	err := db.QueryRow(`SELECT  owner_user_id, device_id, account_id, secret FROM secrets WHERE account_id = $1`, accountId).Scan(&secrets.Owner_user_id, &secrets.DeviceId, &secrets.AccountId, &secrets.Secret)
 	if err != nil {
-		fmt.Printf("Error getting game account secrets: %v", err)
+		// "no rows" just means the account has no device auth; callers handle it.
+		if err != sql.ErrNoRows {
+			fmt.Printf("Error getting game account secrets: %v\n", err)
+		}
 		return types.GameAccountSecrets{}, err
 	}
 	return secrets, nil
@@ -203,7 +206,9 @@ func GetGameAccount(db *sql.DB, id uuid.UUID) (types.GameAccount, error) {
 	var account types.GameAccount
 	err := db.QueryRow(`SELECT id, display_name, remaining_gifts, pavos, access_token, access_token_exp, access_token_exp_date, refresh_token, refresh_token_exp, refresh_token_exp_date, COALESCE(owner_user_id, '00000000-0000-0000-0000-000000000000') FROM game_accounts WHERE id = $1`, id).Scan(&account.ID, &account.DisplayName, &account.RemainingGifts, &account.PaVos, &account.AccessToken, &account.AccessTokenExp, &account.AccessTokenExpDate, &account.RefreshToken, &account.RefreshTokenExp, &account.RefreshTokenExpDate, &account.OwnerUserID)
 	if err != nil {
-		fmt.Printf("Error getting game account: %v", err)
+		if err != sql.ErrNoRows {
+			fmt.Printf("Error getting game account: %v\n", err)
+		}
 		return types.GameAccount{}, err
 	}
 	return account, nil
@@ -299,36 +304,11 @@ func AddTransaction(db *sql.DB, tx types.Transaction) error {
 	return err
 }
 
-// DeleteNewestTransactions removes the N most recent transactions (any type)
-// for an account within the last 24h. Used when manually adding back gift slots
-// so the slot that expires soonest (most recent = expires latest... wait no:
-// most recent created_at = expires last, oldest created_at = expires soonest)
-// To free the slot expiring soonest, delete the OLDEST transaction (ASC).
-// NOTE: "soonest to expire" = oldest created_at. So ORDER BY created_at ASC = correct for freeing next slot.
-// But the user sees timers sorted ASC (soonest first). Adding +1 should remove the soonest timer = oldest tx.
-func DeleteNewestTransactions(db *sql.DB, accountID uuid.UUID, count int) {
-	if count <= 0 {
-		return
-	}
-	// Delete oldest transactions first (these are the ones expiring soonest)
-	_, err := db.Exec(`
-		DELETE FROM transactions
-		WHERE id IN (
-			SELECT id FROM transactions
-			WHERE game_account_id = $1
-			AND created_at >= NOW() - INTERVAL '24 hours'
-			ORDER BY created_at ASC
-			LIMIT $2
-		)
-	`, accountID, count)
-	if err != nil {
-		fmt.Printf("Warning: could not delete transactions: %v\n", err)
-	}
-}
-
-// DeleteOldestFakeTransactions kept for backward compatibility - now delegates to DeleteNewestTransactions
+// DeleteOldestFakeTransactions frees gift slots when they are added back
+// manually. It delegates to FreeGiftSlots, which prefers manual adjustments and
+// in-game placeholders over real web gifts so the gift history is preserved.
 func DeleteOldestFakeTransactions(db *sql.DB, accountID uuid.UUID, count int) {
-	DeleteNewestTransactions(db, accountID, count)
+	FreeGiftSlots(db, accountID, count)
 }
 
 // GetAllSlotExpiryTimes returns the expiry time for each used gift slot in the last 24h
@@ -435,12 +415,12 @@ func UpdatePaVos(db *sql.DB, accountID uuid.UUID, pavos int) error {
 }
 
 // GetTransactionsByAccountIDs returns all transactions for the given accounts,
-// newest first.
+// oldest first (the UI sorts for display).
 func GetTransactionsByAccountIDs(db *sql.DB, accountIDs []uuid.UUID) ([]types.Transaction, error) {
 	if len(accountIDs) == 0 {
 		return []types.Transaction{}, nil
 	}
-	rows, err := db.Query(`SELECT id, game_account_id, sender_name, receiver_id, receiver_username, object_store_id, object_store_name, regular_price, final_price, gift_image, created_at FROM transactions WHERE game_account_id = ANY($1) ORDER BY created_at DESC`, pq.Array(accountIDs))
+	rows, err := db.Query(`SELECT id, game_account_id, sender_name, receiver_id, receiver_username, object_store_id, object_store_name, regular_price, final_price, gift_image, created_at FROM transactions WHERE game_account_id = ANY($1) ORDER BY created_at ASC`, pq.Array(accountIDs))
 	if err != nil {
 		return nil, err
 	}
@@ -516,13 +496,9 @@ func UpdateAllRemainingGifts(db *sql.DB) error {
 			continue
 		}
 
-		err = UpdateRemainingGifts(db, accountID, remainingGifts)
-		if err != nil {
+		if err = UpdateRemainingGifts(db, accountID, remainingGifts); err != nil {
 			fmt.Printf("Error updating remaining gifts for account %s: %v\n", accountID, err)
-			continue
 		}
-
-		fmt.Printf("Updated account %s: %d remaining gifts\n", accountID, remainingGifts)
 	}
 
 	return nil

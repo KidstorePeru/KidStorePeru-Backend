@@ -65,7 +65,7 @@ func updateAllPavos(db *sql.DB) {
 		fmt.Printf("Updating pavos for account %d/%d: %s (ID: %s)\n",
 			i+1, len(gameAccounts), account.DisplayName, account.ID)
 
-		_, err := fortnite.UpdatePavosGameAccount(db, account.ID)
+		_, err := fortnite.SyncAccountFromEpic(db, account.ID)
 		if err != nil {
 			fmt.Printf("Error updating pavos for account %s: %v\n", account.ID, err)
 			errorCount++

@@ -122,3 +122,25 @@ func IsTokenAdmin(c *gin.Context) bool {
 	}
 	return VerifyAdminToken(tokenString) == nil
 }
+
+// SecurityHeaders adds conservative headers to every API response: the API
+// only serves JSON, and authenticated responses must never be cached.
+func SecurityHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		h := c.Writer.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Cache-Control", "no-store")
+		h.Set("Referrer-Policy", "no-referrer")
+		c.Next()
+	}
+}
+
+// LimitBodySize caps request bodies so a huge payload can't exhaust memory.
+func LimitBodySize(max int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, max)
+		}
+		c.Next()
+	}
+}

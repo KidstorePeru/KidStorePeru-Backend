@@ -7,9 +7,9 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"math/rand/v2"
 	"net/http"
 	"strings"
 	"time"
@@ -19,240 +19,16 @@ import (
 	"github.com/google/uuid"
 )
 
-func UpdatePavosForUser(db *sql.DB, userID uuid.UUID, admin bool) {
-	var gameAccounts []types.GameAccount
-	var err error
-
-	if !admin {
-		// Get game accounts for a specific user
-		gameAccounts, err = database.GetGameAccountByOwner(db, userID)
-		if err != nil {
-			fmt.Printf("Could not fetch game accounts for user %s: %v\n", userID, err)
-			return
-		}
-	} else {
-		// Get all game accounts
-		gameAccounts, err = database.GetAllGameAccounts(db)
-		if err != nil {
-			fmt.Printf("Could not fetch all game accounts: %v\n", err)
-			return
-		}
-	}
-
-	for _, account := range gameAccounts {
-		//wait 1s+1rand(5) seconds before updating each account
-		if utils.FetchPavos {
-			time.Sleep(time.Duration(rand.Float32()+0.2) * time.Second)
-		}
-		_, err := UpdatePavosGameAccount(db, account.ID)
-		if err != nil {
-			fmt.Printf("Could not update PaVos for account %s: %v\n", account.ID, err)
-			continue
-		}
-		fmt.Printf("Successfully updated PaVos for account %s\n", account.ID)
-	}
-}
-
-func HandlerUpdatePavosForUser(db *sql.DB, userID uuid.UUID, admin bool) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		result := utils.ProtectedEndpointHandler(c)
-		if result != 200 {
-			return
-		}
-
-		var gameAccounts []types.GameAccount
-		var err error
-
-		//get all game accounts for the user
-		if !admin {
-			//get user ID from context
-			gameAccounts, err = database.GetGameAccountByOwner(db, userID)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not fetch game accounts", "details": err.Error()})
-				return
-			}
-
-		} else {
-			//get all game accounts
-			gameAccounts, err = database.GetAllGameAccounts(db)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not fetch game accounts", "details": err.Error()})
-				return
-			}
-
-		}
-
-		for _, account := range gameAccounts {
-			//wait 1s+1rand(5) seconds before updating each account
-			if utils.FetchPavos {
-				time.Sleep(time.Duration(rand.Float32()+0.2) * time.Second)
-			}
-			_, err := UpdatePavosGameAccount(db, account.ID)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"success": false,
-					"error":   fmt.Sprintf("Could not update PaVos for account %s: %s", account.ID, err.Error()),
-				})
-				continue
-			}
-		}
-		c.JSON(http.StatusOK, gin.H{"success": true})
-
-	}
-}
-
-func UpdatePavosGameAccount(db *sql.DB, accountID uuid.UUID) (int, error) {
-	if utils.FetchPavos {
-
-		pavos, err := GetAccountPavos(db, accountID)
-		if err != nil {
-			fmt.Printf("Could not get PaVos for account %s.: %v\n", accountID, err)
-			return 0, fmt.Errorf("could not get PaVos for account %s.: %s", accountID, err)
-		}
-
-		err = database.UpdatePaVos(db, accountID, pavos)
-		if err != nil {
-			fmt.Printf("Could not update PaVos for account %s.: %v\n", accountID, err)
-			return 0, fmt.Errorf("could not update PaVos for account %s.: %s", accountID, err)
-		}
-
-		fmt.Printf("Successfully updated PaVos for account %s: %d\n", accountID, pavos)
-		return pavos, nil
-
-	} else {
-		fmt.Printf("Skipping PaVos update for account %s due to FETCH_PAVOS=false\n", accountID)
-		return 0, nil
-	}
-}
-
-// UpdatePavosGameAccountManually manually updates pavos by subtracting a specific amount
+// UpdatePavosGameAccountManually lowers the stored pavos by amountToSubtract
+// (clamped at zero). It is the immediate, offline estimate applied right after
+// a gift; the next sync with Epic replaces it with the real balance.
 func UpdatePavosGameAccountManually(db *sql.DB, accountID uuid.UUID, amountToSubtract int) (int, error) {
-	// Get current pavos from database
-	currentPavos, err := database.GetPavos(db, accountID)
+	newPavos, err := database.SubtractPaVos(db, accountID, amountToSubtract)
 	if err != nil {
-		fmt.Printf("Could not get current PaVos for account %s: %v\n", accountID, err)
-		return 0, fmt.Errorf("could not get current PaVos for account %s: %w", accountID, err)
+		return 0, fmt.Errorf("could not update PaVos for account %s: %w", accountID, err)
 	}
-
-	// Calculate new pavos amount
-	newPavos := currentPavos - amountToSubtract
-
-	// Ensure pavos don't go negative
-	if newPavos < 0 {
-		fmt.Printf("Warning: Attempted to subtract %d pavos from account %s, but only %d pavos available. Setting to 0.\n",
-			amountToSubtract, accountID, currentPavos)
-		newPavos = 0
-	}
-
-	// Update pavos in database
-	err = database.UpdatePaVos(db, accountID, newPavos)
-	if err != nil {
-		fmt.Printf("Could not manually update PaVos for account %s: %v\n", accountID, err)
-		return 0, fmt.Errorf("could not manually update PaVos for account %s: %w", accountID, err)
-	}
-
-	fmt.Printf("Successfully manually updated PaVos for account %s: %d -> %d (subtracted %d)\n",
-		accountID, currentPavos, newPavos, amountToSubtract)
-
+	fmt.Printf("PaVos of account %s lowered by %d -> %d (estimate until the next Epic sync)\n", accountID, amountToSubtract, newPavos)
 	return newPavos, nil
-}
-
-// func HandlerUpdatePavosBulk(db *sql.DB, refreshList *RefreshList) gin.HandlerFunc {
-// 	return func(c *gin.Context) {
-// 		result := utils.ProtectedEndpointHandler(c)
-// 		if result != 200 {
-// 			return
-// 		}
-
-// 		var req struct {
-// 			Accounts []string `json:"accounts" binding:"required"`
-// 		}
-// 		if err := c.ShouldBindJSON(&req); err != nil {
-// 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-// 			return
-// 		}
-// 		if len(req.Accounts) == 0 {
-// 			c.JSON(http.StatusBadRequest, gin.H{"error": "No accounts provided"})
-// 			return
-// 		}
-
-// 		for _, accountIDStr := range req.Accounts {
-// 			//parse the account ID
-// 			accountID, err := uuid.Parse(accountIDStr)
-// 			if err != nil {
-// 				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid account ID format: %s", accountIDStr)})
-// 				return
-// 			}
-// 			//get the access token from the refresh list
-// 			accessToken := (*refreshList)[accountID].AccessToken
-// 			if err != nil {
-// 				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Could not get access token for account %s: %s", accountIDStr, err.Error())})
-// 				return
-// 			}
-// 			//get the pavos from the account
-// 			pavos, err := GetAccountPavos(accessToken)
-// 			if err != nil {
-// 				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Could not get PaVos for account %s: %s", accountIDStr, err.Error())})
-// 				return
-// 			}
-
-// 			//update the pavos in the database
-// 			err = UpdatePaVos(db, accountID, pavos)
-// 			if err != nil {
-// 				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Could not update PaVos for account %s: %s", accountIDStr, err.Error())})
-// 				return
-// 			}
-// 			fmt.Printf("Updated PaVos for account %s: %d\n", accountIDStr, pavos)
-
-// 		}
-
-// 	}
-// }
-
-func GetAccountPavos(db *sql.DB, AccountID uuid.UUID) (int, error) {
-	req, err := http.NewRequest("GET", "https://www.epicgames.com/account/v2/api/wallet/fortnite", nil)
-	if err != nil {
-		fmt.Printf("Could not create request for account %s: %v\n", AccountID, err)
-		return 0, fmt.Errorf("could not create request: %w", err)
-	}
-
-	resp, err := ExecuteOperationWithRefresh(req, db, AccountID, "pavos")
-	if err != nil {
-		fmt.Printf("Could not send request for account %s: %v\n", AccountID, err)
-		return 0, fmt.Errorf("could not send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		fmt.Printf("Unexpected status code for account %s: %d\n", AccountID, resp.StatusCode)
-		return 0, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	var response types.PavosResponse
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		fmt.Printf("Could not decode response for account %s: %v\n", AccountID, err)
-		return 0, fmt.Errorf("could not decode response: %w", err)
-	}
-
-	if !response.Success {
-		fmt.Printf("API call was not successful for account %s\n", AccountID)
-		return 0, fmt.Errorf("API call was not successful")
-	}
-
-	pavos := 0
-	for _, purchase := range response.Data.Wallet.Purchased {
-		if purchase.Type == "Currency:MtxPurchased" || purchase.Type == "Currency:MtxPurchaseBonus" {
-			pavos += purchase.Values.Shared
-		}
-	}
-
-	if pavos < 0 {
-		fmt.Printf("Negative PaVos value received for account %s: %d\n", AccountID, pavos)
-		return 0, fmt.Errorf("negative PaVos value received: %d", pavos)
-	}
-
-	fmt.Printf("Fetched PaVos for account %s: %d\n", AccountID, pavos)
-	return pavos, nil
 }
 
 // endpoint handler to send gift
@@ -336,11 +112,21 @@ func HandlerSendGift(db *sql.DB) gin.HandlerFunc {
 		// so nothing below runs (and no slot/pavos is spent) on a failed gift.
 		if err := sendGiftRequest(db, req.AccountID, AccountId, req.ReceiverID, req.GiftId, req.GiftPrice, &req.SenderName, req.Message); err != nil {
 			fmt.Printf("Gift send FAILED for account %s -> %s: %v\n", AccountId, req.ReceiverID, err)
-			c.JSON(http.StatusBadGateway, gin.H{
+			resp := gin.H{
 				"success": false,
 				"error":   "No se pudo enviar el regalo",
-				"details": err.Error(),
-			})
+				"details": describeAccountError(err),
+			}
+			var rejected *giftRejectedError
+			switch {
+			case errors.Is(err, ErrNeedsRelink):
+				resp["needs_relink"] = true
+			case errors.As(err, &rejected):
+				// Read the real state from Epic (pavos, gifts sent in the last
+				// 24h) so the account's numbers are correct after a rejection.
+				scheduleSyncAfterGift(db, AccountId)
+			}
+			c.JSON(http.StatusBadGateway, resp)
 			return
 		}
 
@@ -366,12 +152,13 @@ func HandlerSendGift(db *sql.DB) gin.HandlerFunc {
 			warnings = append(warnings, "no se pudo registrar la transacción")
 		}
 
-		if _, err := UpdatePavosGameAccount(db, AccountId); err != nil || !utils.FetchPavos {
-			if _, manualErr := UpdatePavosGameAccountManually(db, AccountId, req.GiftPrice); manualErr != nil {
-				fmt.Printf("Warning: could not update pavos (auto: %v, manual: %v)\n", err, manualErr)
-				warnings = append(warnings, "no se pudieron actualizar los pavos")
-			}
+		// Immediate estimate (the price of the gift), replaced by the real
+		// balance from Epic a few seconds later.
+		if _, err := UpdatePavosGameAccountManually(db, AccountId, req.GiftPrice); err != nil {
+			fmt.Printf("Warning: could not update pavos: %v\n", err)
+			warnings = append(warnings, "no se pudieron actualizar los pavos")
 		}
+		scheduleSyncAfterGift(db, AccountId)
 
 		// Recompute the cached counter from the 24h transaction history so it
 		// stays consistent with the source of truth.
@@ -429,7 +216,7 @@ func sendGiftRequest(db *sql.DB, accountIDStr string, accountID uuid.UUID, recei
 		return fmt.Errorf("could not build gift payload: %w", err)
 	}
 
-	url := fmt.Sprintf("https://fngw-mcp-gc-livefn.ol.epicgames.com/fortnite/api/game/v2/profile/%s/client/GiftCatalogEntry?profileId=common_core", accountIDStr)
+	url := fmt.Sprintf("%s/fortnite/api/game/v2/profile/%s/client/GiftCatalogEntry?profileId=common_core", epicMCPBase, accountIDStr)
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
 	if err != nil {
 		return fmt.Errorf("could not create gift request: %w", err)
@@ -450,89 +237,46 @@ func sendGiftRequest(db *sql.DB, accountIDStr string, accountID uuid.UUID, recei
 		return nil
 	}
 
-	// Rejection — surface Epic's reason.
-	var epicErr struct {
-		ErrorCode    string `json:"errorCode"`
-		ErrorMessage string `json:"errorMessage"`
-	}
-	_ = json.Unmarshal(body, &epicErr)
-
-	// Per-account gift cap: the account genuinely cannot send more for 24h.
-	// Record it the same way a real gift would so the cooldown is tracked.
-	if epicErr.ErrorCode == "errors.com.epicgames.modules.gamesubcatalog.purchase_not_allowed" {
-		if uerr := database.UpdateRemainingGifts(db, accountID, 0); uerr != nil {
-			fmt.Printf("could not zero remaining gifts for %s: %v\n", accountID, uerr)
-		}
-		for i := 0; i < 5; i++ {
-			_ = database.AddTransaction(db, types.Transaction{
-				ID:              uuid.New(),
-				GameAccountID:   accountID,
-				SenderName:      senderName,
-				ReceiverID:      &receiverUserID,
-				ObjectStoreID:   giftItem,
-				ObjectStoreName: "External Gift",
-				RegularPrice:    float64(giftPrice),
-				FinalPrice:      float64(giftPrice),
-				GiftImage:       "",
-				CreatedAt:       time.Now(),
-			})
-		}
-		return fmt.Errorf("esta cuenta no tiene envíos disponibles por ahora (Epic: %s)", strings.TrimSpace(epicErr.ErrorMessage))
-	}
-
-	if epicErr.ErrorMessage != "" {
-		return fmt.Errorf("Epic rechazó el regalo [%s]: %s", epicErr.ErrorCode, epicErr.ErrorMessage)
-	}
-	return fmt.Errorf("Epic rechazó el regalo (HTTP %d)", resp.StatusCode)
+	// Rejection: keep Epic's reason, and never invent gift records from it.
+	rejection := parseEpicError(resp.StatusCode, body)
+	fmt.Printf("Gift rejected for account %s: HTTP %d code=%q message=%q\n", accountID, resp.StatusCode, rejection.Code, rejection.Message)
+	return &giftRejectedError{Status: rejection.Status, Code: rejection.Code, Message: rejection.Message}
 }
 
-func SmartUpdatePavos(db *sql.DB, accountID uuid.UUID, pavos int) error {
-	currentPavos, err := database.GetPavos(db, accountID)
-	if err != nil {
-		return fmt.Errorf("could not get current PaVos: %w", err)
-	}
-
-	if pavos < 0 && currentPavos+pavos < 0 {
-		return fmt.Errorf("not enough PaVos to deduct")
-	}
-
-	newPavos := currentPavos + pavos
-	if newPavos < 0 {
-		newPavos = 0 // Ensure PaVos don't go negative
-	}
-
-	return database.UpdatePaVos(db, accountID, newPavos)
-
+// giftRejectedError is Epic refusing a gift (as opposed to a network problem).
+type giftRejectedError struct {
+	Status  int
+	Code    string
+	Message string
 }
 
-// func send_gift_request(account_id, access_token, offer_id, final_price, user_id):
-//   url = f"https://fngw-mcp-gc-livefn.ol.epicgames.com/fortnite/api/game/v2/profile/{account_id}/client/GiftCatalogEntry?profileId=common_core"
-//   payload = {
-//       "offerId": offer_id,
-//       "currency": "MtxCurrency",
-//       "currencySubType": "",
-//       "expectedTotalPrice": final_price,
-//       "gameContext": "Frontend.CatabaScreen",
-//       "receiverAccountIds": [user_id],
-//       "giftWrapTemplateId": "",
-//       "personalMessage": ""
-//   }
-//   headers = {
-//       "Content-Type": "application/json",
-//       "Authorization": f"Bearer {access_token}"
-//   }
+func (e *giftRejectedError) Error() string {
+	return explainGiftRejection(e.Status, e.Code, e.Message)
+}
 
-//   response = requests.post(url, json=payload, headers=headers)
-//   with open('config.json', 'r') as file:
-//     account_data = json.load(file)
-//   for account_info in account_data:
-//     device_id = account_info['deviceId']
-//     secret = account_info['secret']
-//   if response.status_code == 200:
-//     print(f"[{account_info['accountId']}] Sent cosmetic gift to {user_id}")
-
-// Handle Authorization_Code login  (input authorization code) output:
-//raw example
+// explainGiftRejection turns Epic's error into a message the operator can act
+// on. purchase_not_allowed is a catch-all in Epic's API: it is returned when
+// the receiver already owns the item, when the accounts have not been friends
+// for 48h, when the sender reached the daily gift limit, when the item left the
+// shop... so it must NOT be read as "the account used all its gifts".
+func explainGiftRejection(status int, code, message string) string {
+	lc := strings.ToLower(code)
+	msg := strings.TrimSpace(message)
+	switch {
+	case strings.Contains(lc, "purchase_not_allowed"):
+		return "Epic no permitió este regalo (purchase_not_allowed). Puede ser porque: el receptor ya tiene el objeto, " +
+			"no son amigos desde hace 48 h, la cuenta ya envió sus 5 regalos de las últimas 24 h, o el objeto ya no está en la tienda. " +
+			"Detalle de Epic: " + msg
+	case strings.Contains(lc, "mismatch") || strings.Contains(lc, "price"):
+		return "El precio del objeto cambió en Epic. Recarga la tienda e inténtalo de nuevo. Detalle de Epic: " + msg
+	case strings.Contains(lc, "insufficient") || strings.Contains(lc, "not_enough") || strings.Contains(lc, "balance"):
+		return "La cuenta no tiene pavos suficientes para este regalo. Detalle de Epic: " + msg
+	case msg != "":
+		return fmt.Sprintf("Epic rechazó el regalo [%s]: %s", code, msg)
+	default:
+		return fmt.Sprintf("Epic rechazó el regalo (HTTP %d)", status)
+	}
+}
 
 // UpdateRemainingGiftsInAccounts periodically recalculates every account's
 // remaining gift slots from the 24h transaction history. It runs forever and is
@@ -615,25 +359,33 @@ func HandlerRefreshPavosForAccount(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Update pavos for the account
-		newPavos, err := UpdatePavosGameAccount(db, accountID)
+		// Read the real pavos (and gift history) from Epic.
+		res, err := SyncAccountFromEpic(db, accountID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
+			resp := gin.H{
 				"success": false,
-				"error":   "Could not refresh pavos",
-				"details": err.Error(),
-			})
+				"error":   "No se pudieron leer los pavos desde Epic",
+				"details": describeAccountError(err),
+			}
+			if errors.Is(err, ErrNeedsRelink) {
+				resp["needs_relink"] = true
+			}
+			c.JSON(http.StatusBadGateway, resp)
 			return
 		}
 
+		data := gin.H{
+			"account_id":   accountID.String(),
+			"display_name": gameAccount.DisplayName,
+			"pavos":        res.Pavos,
+		}
+		if res.GiftsKnown {
+			data["gifts_sent_24h"] = res.GiftsLast24h
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"message": "Pavos refreshed successfully",
-			"data": gin.H{
-				"account_id":   accountID.String(),
-				"display_name": gameAccount.DisplayName,
-				"pavos":        newPavos,
-			},
+			"data":    data,
 		})
 	}
 }
@@ -804,22 +556,24 @@ func HandlerUpdatePavosForAccount(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		const maxManualPavos = 100_000_000
+		if req.Amount > maxManualPavos || req.Amount < -maxManualPavos {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Amount out of range"})
+			return
+		}
+
+		// A manual change is applied on top of what is stored; the periodic
+		// sync with Epic will replace it with the real balance.
 		var newPavos int
 		if req.Type == "override" {
-			// Set pavos to the specified amount
 			newPavos = req.Amount
-		} else if req.Type == "add" {
-			// Add the amount to current pavos
-			newPavos = currentPavos + req.Amount
+			if newPavos < 0 {
+				newPavos = 0
+			}
+			err = database.UpdatePaVos(db, accountID, newPavos)
+		} else {
+			newPavos, err = database.AddPaVos(db, accountID, req.Amount)
 		}
-
-		// Ensure pavos don't go negative
-		if newPavos < 0 {
-			newPavos = 0
-		}
-
-		// Update pavos in database
-		err = database.UpdatePaVos(db, accountID, newPavos)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"success": false,
@@ -894,7 +648,20 @@ func HandlerUpdateRemainingGifts(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		current := gameAccount.RemainingGifts
+		if req.Amount < 0 || req.Amount > 5 {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Amount must be between 0 and 5"})
+			return
+		}
+
+		// Serialize with gift sending / history syncs for this account, and start
+		// from the real (24h history based) count, not the cached column.
+		unlock := lockAccount(accountID)
+		defer unlock()
+		current, err := database.CalculateRemainingGifts(db, accountID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not read remaining gifts"})
+			return
+		}
 		var newVal int
 		switch req.Type {
 		case "add":
@@ -923,9 +690,9 @@ func HandlerUpdateRemainingGifts(db *sql.DB) gin.HandlerFunc {
 					ID:              uuid.New(),
 					GameAccountID:   accountID,
 					SenderName:      &senderName,
-					ReceiverID:      strPtr("manual-adjustment"),
+					ReceiverID:      strPtr(database.ManualAdjustmentID),
 					ReceiverName:    strPtr("Ajuste manual"),
-					ObjectStoreID:   "manual-adjustment",
+					ObjectStoreID:   database.ManualAdjustmentID,
 					ObjectStoreName: "Ajuste manual",
 					RegularPrice:    0,
 					FinalPrice:      0,
@@ -944,8 +711,11 @@ func HandlerUpdateRemainingGifts(db *sql.DB) gin.HandlerFunc {
 			database.DeleteOldestFakeTransactions(db, accountID, slotsFreed)
 		}
 
-		err = database.UpdateRemainingGifts(db, accountID, newVal)
-		if err != nil {
+		// Store what the history now says (it is the source of truth).
+		if recalculated, cerr := database.CalculateRemainingGifts(db, accountID); cerr == nil {
+			newVal = recalculated
+		}
+		if err := database.UpdateRemainingGifts(db, accountID, newVal); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not update remaining gifts"})
 			return
 		}

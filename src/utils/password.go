@@ -25,3 +25,12 @@ func CheckPassword(hash, plain string) bool {
 func IsHashed(s string) bool {
 	return strings.HasPrefix(s, "$2a$") || strings.HasPrefix(s, "$2b$") || strings.HasPrefix(s, "$2y$")
 }
+
+// dummyHash is compared against when a login names a user that does not exist,
+// so both cases take about the same time and can't be told apart by timing.
+var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("not-a-real-password"), bcrypt.DefaultCost)
+
+// BurnPasswordCheck spends the time of a real password check.
+func BurnPasswordCheck(plain string) {
+	_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(plain))
+}

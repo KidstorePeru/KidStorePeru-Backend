@@ -3,6 +3,7 @@ module KidStoreBotBE
 go 1.26.0
 
 require (
+	github.com/fergusstrange/embedded-postgres v1.34.0
 	github.com/gin-contrib/cors v1.7.5
 	github.com/gin-gonic/gin v1.10.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -10,7 +11,7 @@ require (
 	github.com/kelseyhightower/envconfig v1.4.0
 )
 
-require github.com/kr/text v0.2.0 // indirect
+require github.com/xi2/xz v0.0.0-20171230120015-48954b6210f8 // indirect
 
 require (
 	github.com/bytedance/sonic v1.13.2 // indirect

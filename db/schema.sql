@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS game_accounts (
     display_name           TEXT NOT NULL,
     remaining_gifts        INTEGER DEFAULT 0,
     pavos                  INTEGER DEFAULT 0,
+    pavos_synced_at        TIMESTAMPTZ,            -- last time pavos were read from Epic
     owner_user_id          UUID REFERENCES users(id) ON DELETE CASCADE,
     access_token           TEXT NOT NULL,
     access_token_exp       INTEGER DEFAULT 0,
