@@ -18,6 +18,9 @@ CREATE TABLE IF NOT EXISTS game_accounts (
     remaining_gifts        INTEGER DEFAULT 0,
     pavos                  INTEGER DEFAULT 0,
     pavos_synced_at        TIMESTAMPTZ,            -- last time pavos were read from Epic
+    friends_count          INTEGER,                -- friends the account has (NULL = unknown)
+    friends_full           BOOLEAN NOT NULL DEFAULT false, -- cannot accept more friends
+    friends_synced_at      TIMESTAMPTZ,
     owner_user_id          UUID REFERENCES users(id) ON DELETE CASCADE,
     access_token           TEXT NOT NULL,
     access_token_exp       INTEGER DEFAULT 0,

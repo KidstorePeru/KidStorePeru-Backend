@@ -27,6 +27,9 @@ const (
 func EnsureSchema(db *sql.DB) error {
 	stmts := []string{
 		`ALTER TABLE game_accounts ADD COLUMN IF NOT EXISTS pavos_synced_at TIMESTAMPTZ`,
+		`ALTER TABLE game_accounts ADD COLUMN IF NOT EXISTS friends_count INTEGER`,
+		`ALTER TABLE game_accounts ADD COLUMN IF NOT EXISTS friends_full BOOLEAN NOT NULL DEFAULT false`,
+		`ALTER TABLE game_accounts ADD COLUMN IF NOT EXISTS friends_synced_at TIMESTAMPTZ`,
 		`CREATE INDEX IF NOT EXISTS idx_transactions_account_created ON transactions (game_account_id, created_at DESC)`,
 	}
 	for _, s := range stmts {

@@ -1,6 +1,7 @@
 package fortnite
 
 import (
+	database "KidStoreBotBE/src/db"
 	"KidStoreBotBE/src/testutil"
 	"database/sql"
 	"fmt"
@@ -20,6 +21,10 @@ func TestMain(m *testing.M) {
 			fmt.Println("integration tests disabled:", err)
 		} else {
 			testDB = db
+			if err := database.EnsureSchema(db); err != nil {
+				fmt.Println("schema upgrade failed:", err)
+				os.Exit(1)
+			}
 			defer stop()
 		}
 	}

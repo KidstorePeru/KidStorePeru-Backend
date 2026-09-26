@@ -380,6 +380,12 @@ func HandlerRefreshPavosForAccount(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		// Also keep the friend-list count fresh (at most every 2 minutes);
+		// best effort, it never fails the refresh.
+		if _, ferr := RefreshFriendsState(db, accountID, 2*time.Minute); ferr != nil {
+			fmt.Printf("Friend count for %s: %v\n", accountID, ferr)
+		}
+
 		data := gin.H{
 			"account_id":   accountID.String(),
 			"display_name": gameAccount.DisplayName,

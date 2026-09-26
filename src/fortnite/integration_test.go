@@ -36,6 +36,14 @@ type fakeEpic struct {
 	tokenHook   func(grant string) (int, string)
 	profileHook func(bearer string) (int, string)
 	giftHook    func(bearer string, body []byte) (int, string)
+
+	// friends service (defaults: no friends, nothing pending, accepts succeed)
+	summaryHook   func() (int, string)
+	incoming      string
+	acceptHook    func(target string) (int, string)
+	accepted      []string
+	summaryCalls  int
+	incomingCalls int
 }
 
 func newFakeEpic(t *testing.T) *fakeEpic {
@@ -88,6 +96,43 @@ func newFakeEpic(t *testing.T) *fakeEpic {
 			return
 		}
 		io.WriteString(w, `{"profileChanges":[]}`)
+	})
+
+	mux.HandleFunc("GET /friends/api/v1/{id}/summary", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.summaryCalls++
+		f.mu.Unlock()
+		if f.summaryHook != nil {
+			status, body := f.summaryHook()
+			w.WriteHeader(status)
+			io.WriteString(w, body)
+			return
+		}
+		io.WriteString(w, `{"friends":[],"incoming":[],"outgoing":[],"limitsReached":{"accepted":false}}`)
+	})
+	mux.HandleFunc("GET /friends/api/v1/{id}/incoming", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.incomingCalls++
+		body := f.incoming
+		f.mu.Unlock()
+		if body == "" {
+			body = "[]"
+		}
+		io.WriteString(w, body)
+	})
+	mux.HandleFunc("POST /friends/api/v1/{id}/friends/{target}", func(w http.ResponseWriter, r *http.Request) {
+		target := r.PathValue("target")
+		if f.acceptHook != nil {
+			if status, body := f.acceptHook(target); status != 0 {
+				w.WriteHeader(status)
+				io.WriteString(w, body)
+				return
+			}
+		}
+		f.mu.Lock()
+		f.accepted = append(f.accepted, target)
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	f.srv = httptest.NewServer(mux)
