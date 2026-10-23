@@ -254,3 +254,40 @@ func TestDeviceAuthIsReportedPerAccount(t *testing.T) {
 		t.Errorf("device auth flags = %v, want only the first account", got)
 	}
 }
+
+// An account that only has a refresh token (no device auth) is given permanent
+// credentials the first time its token is renewed, so it stops depending on a
+// token Epic can revoke when the account signs in to the game.
+func TestAccountWithOnlyARefreshTokenGetsPermanentCredentials(t *testing.T) {
+	db := requireDB(t)
+	f := newFakeEpic(t)
+	seedAccount(t, db, accountOpts{tokenExpiry: time.Now().Add(-time.Hour)}) // expired, no secrets
+	const hexID = "11111111222233334444555555555555"
+	if _, err := database.GetGameAccountSecrets(db, hexID); err == nil {
+		t.Fatal("precondition: the account already has device auth")
+	}
+
+	resp, err := operation(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if f.grantCount("refresh_token") != 1 {
+		t.Errorf("the token was renewed with the refresh token %d times, want 1", f.grantCount("refresh_token"))
+	}
+	if s, err := database.GetGameAccountSecrets(db, hexID); err != nil || s.DeviceId == "" || s.Secret == "" {
+		t.Fatalf("permanent credentials were not stored: %+v %v", s, err)
+	}
+
+	// from now on the renewal uses them instead of the refresh token
+	db.Exec(`UPDATE game_accounts SET access_token_exp_date = now() - interval '1 hour'`)
+	resp, err = operation(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if f.grantCount("device_auth") == 0 || f.grantCount("refresh_token") != 1 {
+		t.Errorf("grants: device_auth=%d refresh_token=%d, want device auth used and no new refresh-token grant", f.grantCount("device_auth"), f.grantCount("refresh_token"))
+	}
+}
