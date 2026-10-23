@@ -27,14 +27,7 @@ func AuthMiddleware() gin.HandlerFunc {
 		tokenString := parts[1]
 
 		// Parse and validate token
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			// Validate signing method
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, jwt.ErrSignatureInvalid
-			}
-			return secretKey, nil
-		})
-
+		token, err := parseToken(tokenString)
 		if err != nil || !token.Valid {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Invalid token"})
 			return

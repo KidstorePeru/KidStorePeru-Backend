@@ -22,6 +22,9 @@ import (
 // Epic allows a gift between them.
 const giftFriendshipMinAge = 48 * time.Hour
 
+// limaTime is the shop operators time zone (Peru has no daylight saving).
+var limaTime = time.FixedZone("GMT-5", -5*60*60)
+
 // lookupAccountByDisplayName resolves an Epic display name to an account id and
 // canonical display name, using the given game account's credentials.
 func lookupAccountByDisplayName(db *sql.DB, viaAccount uuid.UUID, displayName string) (types.PublicAccountResult, error) {
@@ -144,7 +147,7 @@ func HandlerSearchOnlineFortniteAccount(db *sql.DB) gin.HandlerFunc {
 			"user":        true,
 			"accountId":   target.AccountId,
 			"displayName": target.DisplayName,
-			"created":     friendCreated.Format("02/01/2006 15:04") + " GMT-5",
+			"created":     friendCreated.In(limaTime).Format("02/01/2006 15:04") + " GMT-5",
 		}
 		if age <= giftFriendshipMinAge {
 			hoursLeft := int((giftFriendshipMinAge - age).Hours()) + 1
@@ -362,6 +365,9 @@ func StartFriendRequestHandler(db *sql.DB, intervalSeconds int) {
 // friend list is full (then it only re-checks now and then, so it resumes by
 // itself once friends are removed by hand).
 func processFriendRequests(db *sql.DB, account types.GameAccount, st database.FriendsState) {
+	if friendRequestsPaused(account.ID) {
+		return // Epic rejected this account's credentials: wait for it to be linked again
+	}
 	sleepJitter(time.Second, 2*time.Second) // avoid rate limiting
 
 	stale := friendsCheckDue(account.ID, st)
@@ -370,37 +376,38 @@ func processFriendRequests(db *sql.DB, account types.GameAccount, st database.Fr
 	}
 	if stale {
 		friendsAttempts.Store(account.ID, time.Now())
-		// Refresh the count (also detects that friends were removed).
+		// Refresh the count (also detects that friends were removed). When it
+		// cannot be read the stored flag is left as it was, and the accept
+		// below tells whether there is room.
 		full, err := RefreshFriendsState(db, account.ID, 0)
 		switch {
 		case err == nil && full:
 			fmt.Printf("Account %s has a full friend list, skipping automatic accepting\n", account.DisplayName)
 			return
-		case err != nil:
-			// Count unavailable: fall through and let the accept itself tell.
-			if errors.Is(err, ErrNeedsRelink) {
-				return
-			}
-			if st.Full && isThrottledError(err) {
-				return
-			}
+		case errors.Is(err, ErrNeedsRelink):
+			pauseFriendRequests(account.ID)
+			return
+		case err != nil && st.Full && isThrottledError(err):
+			return
 		}
 	}
 
 	friendRequests, err := getIncomingRequests(db, account)
 	if err != nil {
+		if errors.Is(err, ErrNeedsRelink) {
+			pauseFriendRequests(account.ID)
+		}
 		fmt.Printf("Failed to get friend requests for account %s: %v\n", account.DisplayName, err)
 		return
 	}
 	if len(friendRequests) == 0 {
-		if st.Full && stale {
-			// Nothing pending, so it cannot be proven either way; keep the flag.
-			_ = database.SetFriendsFull(db, account.ID, true)
-		}
 		return
 	}
 
 	accepted, err := acceptFriendRequests(db, account, friendRequests)
+	if errors.Is(err, ErrNeedsRelink) {
+		pauseFriendRequests(account.ID)
+	}
 	switch {
 	case err != nil && isFriendsFullError(err):
 		_ = database.SetFriendsFull(db, account.ID, true)

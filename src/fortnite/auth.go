@@ -159,9 +159,13 @@ func HandlerFinishConnectFortniteAccount(db *sql.DB) gin.HandlerFunc {
 		displayName := tokens.DisplayName
 
 		// Step 2: permanent device-auth credentials (keep the account alive
-		// without needing the operator again).
+		// without needing the operator again). Without them the account depends
+		// on a refresh token that Epic revokes (for example when the account
+		// signs in to the game), so the outcome is reported to the operator.
+		deviceAuthOK, deviceAuthIssue := false, ""
 		if secrets, derr := createDeviceAuth(hexID, tokens.AccessToken); derr != nil {
 			fmt.Printf("Warning: could not create device auth for %s (the account will rely on its refresh token): %v\n", accountID, derr)
+			deviceAuthIssue = derr.Error()
 		} else {
 			if serr := database.UpsertGameAccountSecrets(db, types.GameAccountSecrets{
 				Owner_user_id: userID,
@@ -170,9 +174,12 @@ func HandlerFinishConnectFortniteAccount(db *sql.DB) gin.HandlerFunc {
 				Secret:        secrets.Secret,
 			}); serr != nil {
 				fmt.Printf("Warning: could not save device secrets for %s: %v\n", accountID, serr)
+				deviceAuthIssue = "no se pudieron guardar las credenciales: " + serr.Error()
 			} else if fresh, gerr := grantDeviceAuth(types.GameAccountSecrets{DeviceId: secrets.DeviceId, AccountId: hexID, Secret: secrets.Secret}); gerr != nil {
 				fmt.Printf("Warning: device auth login failed for %s: %v\n", accountID, gerr)
+				deviceAuthIssue = gerr.Error()
 			} else {
+				deviceAuthOK = true
 				// Step 3: use the device-auth session from now on.
 				if err := saveTokens(db, accountID, fresh); err != nil {
 					fmt.Printf("Warning: could not store device-auth tokens for %s: %v\n", accountID, err)
@@ -191,6 +198,10 @@ func HandlerFinishConnectFortniteAccount(db *sql.DB) gin.HandlerFunc {
 			"username":     displayName,
 			"pavos":        0,
 			"pavos_synced": false,
+			"device_auth":  deviceAuthOK,
+		}
+		if deviceAuthIssue != "" {
+			resp["device_auth_error"] = deviceAuthIssue
 		}
 		if res, serr := SyncAccountFromEpic(db, accountID); serr != nil {
 			fmt.Printf("Warning: initial sync failed for %s: %v\n", accountID, serr)

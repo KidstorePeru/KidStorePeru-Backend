@@ -35,12 +35,6 @@ type EnvConfigType struct {
 	Port_HTTP string `envconfig:"PORT" default:"8080"`
 }
 
-// Fortnite API Login
-// response from client credentials grant
-type AccessTokenResult struct {
-	AccessToken string `json:"access_token"`
-}
-
 // response from deviceAuthorization
 type DeviceResultResponse struct {
 	DeviceCode              string `json:"device_code"`
@@ -75,24 +69,6 @@ type DeviceSecretsResponse struct {
 }
 
 // Fortnite Account
-
-type PavosResponse struct {
-	Success bool `json:"success"`
-	Data    struct {
-		Wallet struct {
-			Purchased []struct {
-				Type   string `json:"type"`
-				Values struct {
-					Shared  int `json:"Shared"`
-					Switch  int `json:"Switch"`
-					PCKorea int `json:"PCKorea"`
-				} `json:"values"`
-			} `json:"purchased"`
-			Earned int `json:"earned"`
-		} `json:"wallet"`
-		LastUpdated string `json:"lastUpdated"`
-	} `json:"data"`
-}
 
 // DB models
 type User struct {
@@ -151,15 +127,6 @@ type FriendRequest struct {
 	Created   string `json:"created"`
 }
 
-type AccountTokens struct {
-	ID             uuid.UUID
-	AccessTokenExp time.Time
-	RefreshToken   string
-	AccessToken    string
-}
-
-type RefreshList map[uuid.UUID]AccountTokens
-
 // Map to simplified response
 type SimplifiedAccount struct {
 	ID             string                 `json:"id"`
@@ -174,6 +141,9 @@ type SimplifiedAccount struct {
 	FriendsCount *int `json:"friendsCount,omitempty"`
 	FriendsMax   int  `json:"friendsMax"`
 	FriendsFull  bool `json:"friendsFull"`
+	// DeviceAuth is false when the account has no permanent device-auth
+	// credentials and so depends on a refresh token Epic can revoke at any time.
+	DeviceAuth bool `json:"deviceAuth"`
 }
 
 type GameFriendRequest struct {
@@ -192,12 +162,6 @@ type FriendResult struct {
 	Created   string `json:"created"`
 }
 
-// Page
-type AccountsToConnect struct {
-	User_id     uuid.UUID `json:"user_id"`
-	Device_code string    `json:"device_code"`
-}
-
 type Login struct {
 	User     string `form:"user" json:"user" xml:"user" binding:"required"`
 	Password string `form:"password" json:"password" xml:"password" binding:"required"`
@@ -209,23 +173,16 @@ type GiftRequest struct {
 	ReceiverID   string `json:"receiver_id" binding:"required"`
 	ReceiverName string `json:"receiver_username" binding:"required"`
 	GiftId       string `json:"gift_id" binding:"required"`
-	GiftPrice    int    `json:"gift_price" binding:"required"`
+	GiftPrice    int    `json:"gift_price" binding:"required,gt=0"`
 	GiftName     string `json:"gift_name" binding:"required"`
 	Message      string `json:"message" binding:"required"`
-	GiftImage    string `json:"gift_image" binding:"required"`
+	// GiftImage only illustrates the history; a shop item without a picture can
+	// still be gifted.
+	GiftImage string `json:"gift_image"`
 }
 
 type UpdatePavosRequest struct {
 	AccountID string `json:"account_id" binding:"required"`
 	Type      string `json:"type" binding:"required"` // "override" or "add"
 	Amount    int    `json:"amount"`
-}
-
-// Other types
-type AuthorizationCode struct {
-	Code string `json:"code"`
-}
-
-type AccountIdStr struct {
-	AccountId string
 }

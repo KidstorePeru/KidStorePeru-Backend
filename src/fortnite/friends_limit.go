@@ -111,3 +111,19 @@ func friendsCheckDue(id uuid.UUID, st database.FriendsState) bool {
 	}
 	return time.Since(last) >= friendsRecheckEvery
 }
+
+// friendsPausedUntil holds, per account, until when friend-request handling is
+// suspended because Epic rejected its credentials (it needs to be linked again).
+// Without this the account would be polled, and fail, every round.
+var friendsPausedUntil sync.Map // map[uuid.UUID]time.Time
+
+const friendsPauseFor = 10 * time.Minute
+
+func pauseFriendRequests(id uuid.UUID) {
+	friendsPausedUntil.Store(id, time.Now().Add(friendsPauseFor))
+}
+
+func friendRequestsPaused(id uuid.UUID) bool {
+	v, ok := friendsPausedUntil.Load(id)
+	return ok && time.Now().Before(v.(time.Time))
+}
