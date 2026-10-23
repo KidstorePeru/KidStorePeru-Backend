@@ -4,6 +4,7 @@ import (
 	"KidStoreBotBE/src/types"
 	"KidStoreBotBE/src/utils"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -16,17 +17,10 @@ import (
 // ========== USER METHODS ==========
 func AddUser(db *sql.DB, user types.User) error {
 	_, err := db.Exec(`INSERT INTO users (id, username, email, password, created_at, updated_at) VALUES ($1, $2, $3, $4, now(), now())`, user.ID, user.Username, user.Email, user.Password)
-	fmt.Printf("The user request value %v", user)
 	if err != nil {
-		fmt.Printf("Error adding user: %v", err)
+		fmt.Printf("Error adding user %q: %v\n", user.Username, err)
 	}
 	return err
-}
-
-func GetUser(db *sql.DB, id uuid.UUID) (types.User, error) {
-	var user types.User
-	err := db.QueryRow(`SELECT id, username, email, password, created_at, updated_at FROM users WHERE id = $1`, id).Scan(&user.ID, &user.Username, &user.Email, &user.Password, &user.CreatedAt, &user.UpdatedAt)
-	return user, err
 }
 
 func GetUserByUsername(db *sql.DB, username string) (types.User, error) {
@@ -58,27 +52,8 @@ func UpdateUser(db *sql.DB, user types.User) error {
 	return err
 }
 
-func DeleteUser(db *sql.DB, id uuid.UUID) error {
-	_, err := db.Exec(`DELETE FROM users WHERE id = $1`, id)
-	return err
-}
-
 func DeleteUsersByIds(db *sql.DB, ids []uuid.UUID) error {
 	_, err := db.Exec(`DELETE FROM users WHERE id = ANY($1)`, pq.Array(ids))
-	return err
-}
-
-// ========== GAME ACCOUNT METHODS ==========
-func AddGameAccount(db *sql.DB, account types.GameAccount) error {
-	_, err := db.Exec(`INSERT INTO game_accounts (id, display_name, remaining_gifts, pavos, access_token, access_token_exp, access_token_exp_date, refresh_token, refresh_token_exp, refresh_token_exp_date, owner_user_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now(), now())`, account.ID, account.DisplayName, account.RemainingGifts, account.PaVos, account.AccessToken, account.AccessTokenExp, account.AccessTokenExpDate, account.RefreshToken, account.RefreshTokenExp, account.RefreshTokenExpDate, account.OwnerUserID)
-	if err != nil {
-		fmt.Printf("Error adding game account: %v", err)
-	}
-	return err
-}
-
-func DeleteGameAccountByUsername(db *sql.DB, username string, ownerID uuid.UUID) error {
-	_, err := db.Exec(`DELETE FROM game_accounts WHERE username = $1 AND owner_user_id = $2`, username, ownerID)
 	return err
 }
 
@@ -90,20 +65,12 @@ func DeleteGameAccountByID(db *sql.DB, id uuid.UUID) error {
 
 	_, err := db.Exec(`DELETE FROM secrets WHERE account_id = $1`, idStr)
 	if err != nil {
-		fmt.Printf("Error deleting game account secrets: %v", err)
+		fmt.Printf("Error deleting game account secrets: %v\n", err)
 	}
 
 	_, err = db.Exec(`DELETE FROM game_accounts WHERE id = $1`, id)
 	if err != nil {
-		fmt.Printf("Error deleting game account: %v", err)
-	}
-	return err
-}
-
-func AddGameAccountSecrets(db *sql.DB, secrets types.GameAccountSecrets) error {
-	_, err := db.Exec(`INSERT INTO secrets (owner_user_id, device_id, account_id, secret) VALUES ($1, $2, $3, $4)`, secrets.Owner_user_id, secrets.DeviceId, secrets.AccountId, secrets.Secret)
-	if err != nil {
-		fmt.Printf("Error adding game account secrets: %v", err)
+		fmt.Printf("Error deleting game account: %v\n", err)
 	}
 	return err
 }
@@ -119,46 +86,6 @@ func GetGameAccountSecrets(db *sql.DB, accountId string) (types.GameAccountSecre
 		return types.GameAccountSecrets{}, err
 	}
 	return secrets, nil
-}
-
-// get (only) the ids and refresh tokens of all game accounts in the db
-// func GetAllFAccountsIds(db *sql.DB) ([]GameAccountMinimal, error) {
-// 	var accounts []GameAccountMinimal
-// 	rows, err := db.Query(`SELECT game_account_id, access_token, refresh_token FROM game_accounts`)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	defer rows.Close()
-// 	for rows.Next() {
-// 		var account GameAccountMinimal
-// 		if err := rows.Scan(&account.GameAccountID, &account.AccessToken, &account.RefreshToken); err != nil {
-// 			return nil, err
-// 		}
-// 		accounts = append(accounts, account)
-// 	}
-// 	if err := rows.Err(); err != nil {
-// 		return nil, err
-// 	}
-// 	return accounts, nil
-// }
-
-func GetGameAccountByOwner(db *sql.DB, ownerID uuid.UUID) ([]types.GameAccount, error) {
-	query := `SELECT id, display_name, remaining_gifts, pavos, access_token, access_token_exp, access_token_exp_date, refresh_token, refresh_token_exp, refresh_token_exp_date FROM game_accounts WHERE owner_user_id = $1`
-	rows, err := db.Query(query, ownerID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var accounts []types.GameAccount
-	for rows.Next() {
-		var account types.GameAccount
-		if err := rows.Scan(&account.ID, &account.DisplayName, &account.RemainingGifts, &account.PaVos, &account.AccessToken, &account.AccessTokenExp, &account.AccessTokenExpDate, &account.RefreshToken, &account.RefreshTokenExp, &account.RefreshTokenExpDate); err != nil {
-			return nil, err
-		}
-		accounts = append(accounts, account)
-	}
-	return accounts, nil
 }
 
 func GetGameAccountsByOwnerLimited(db *sql.DB, ownerUserID uuid.UUID) ([]types.GameAccount, error) {
@@ -299,7 +226,7 @@ func UpdateGameAccount(db *sql.DB, account types.GameAccount) error {
 func AddTransaction(db *sql.DB, tx types.Transaction) error {
 	_, err := db.Exec(`INSERT INTO transactions (id, game_account_id, sender_name, receiver_id, receiver_username, object_store_id, object_store_name, regular_price, final_price, gift_image, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())`, tx.ID, tx.GameAccountID, tx.SenderName, tx.ReceiverID, tx.ReceiverName, tx.ObjectStoreID, tx.ObjectStoreName, tx.RegularPrice, tx.FinalPrice, tx.GiftImage)
 	if err != nil {
-		fmt.Printf("Error adding transaction: %v", err)
+		fmt.Printf("Error adding transaction: %v\n", err)
 	}
 	return err
 }
@@ -336,39 +263,6 @@ func GetAllSlotExpiryTimes(db *sql.DB, accountID uuid.UUID) ([]time.Time, error)
 	return times, nil
 }
 
-func GetTransaction(db *sql.DB, id uuid.UUID) (types.Transaction, error) {
-	var tx types.Transaction
-	err := db.QueryRow(`SELECT id, game_account_id, sender_name, receiver_id, receiver_username, object_store_id, object_store_name, regular_price, final_price, gift_image, created_at FROM transactions WHERE id = $1`, id).Scan(&tx.ID, &tx.GameAccountID, &tx.SenderName, &tx.ReceiverID, &tx.ReceiverName, &tx.ObjectStoreID, &tx.ObjectStoreName, &tx.RegularPrice, &tx.FinalPrice, &tx.GiftImage, &tx.CreatedAt)
-	if err != nil {
-		fmt.Printf("Error getting transaction: %v", err)
-		return types.Transaction{}, err
-	}
-	return tx, nil
-}
-
-func DeleteTransaction(db *sql.DB, id uuid.UUID) error {
-	_, err := db.Exec(`DELETE FROM transactions WHERE id = $1`, id)
-	return err
-}
-
-func GetLast24HoursTransactions(db *sql.DB) ([]types.Transaction, error) {
-	var transactions []types.Transaction
-	rows, err := db.Query(`SELECT id, game_account_id, sender_name, receiver_id, receiver_username, object_store_id, object_store_name, regular_price, final_price, gift_image, created_at FROM transactions WHERE created_at >= NOW() - INTERVAL '24 hours'`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var tx types.Transaction
-		if err := rows.Scan(&tx.ID, &tx.GameAccountID, &tx.SenderName, &tx.ReceiverID, &tx.ReceiverName, &tx.ObjectStoreID, &tx.ObjectStoreName, &tx.RegularPrice, &tx.FinalPrice, &tx.GiftImage, &tx.CreatedAt); err != nil {
-			return nil, err
-		}
-		transactions = append(transactions, tx)
-	}
-	return transactions, nil
-}
-
 func GetRemainingGifts(db *sql.DB, accountID uuid.UUID) (int, error) {
 	// Use real-time calculation instead of stored value for accuracy
 	return CalculateRemainingGifts(db, accountID)
@@ -377,21 +271,7 @@ func GetRemainingGifts(db *sql.DB, accountID uuid.UUID) (int, error) {
 func UpdateRemainingGifts(db *sql.DB, accountID uuid.UUID, remainingGifts int) error {
 	_, err := db.Exec(`UPDATE game_accounts SET remaining_gifts = $1 WHERE id = $2`, remainingGifts, accountID)
 	if err != nil {
-		fmt.Printf("Error updating remaining gifts: %v", err)
-	}
-	return err
-}
-
-func UpdateRemainingGiftsInBulk(db *sql.DB, accountIDs []uuid.UUID, remainingGifts int) error {
-	if len(accountIDs) == 0 {
-		return nil // No accounts to update
-	}
-
-	// Create a parameterized query with placeholders for each account ID
-	query := `UPDATE game_accounts SET remaining_gifts = $1 WHERE id = ANY($2)`
-	_, err := db.Exec(query, remainingGifts, pq.Array(accountIDs))
-	if err != nil {
-		fmt.Printf("Error updating remaining gifts in bulk: %v", err)
+		fmt.Printf("Error updating remaining gifts: %v\n", err)
 	}
 	return err
 }
@@ -400,7 +280,7 @@ func GetPavos(db *sql.DB, accountID uuid.UUID) (int, error) {
 	var pavos int
 	err := db.QueryRow(`SELECT pavos FROM game_accounts WHERE id = $1`, accountID).Scan(&pavos)
 	if err != nil {
-		fmt.Printf("Error fetching PaVos: %v", err)
+		fmt.Printf("Error fetching PaVos: %v\n", err)
 		return 0, err
 	}
 	return pavos, nil
@@ -409,7 +289,7 @@ func GetPavos(db *sql.DB, accountID uuid.UUID) (int, error) {
 func UpdatePaVos(db *sql.DB, accountID uuid.UUID, pavos int) error {
 	_, err := db.Exec(`UPDATE game_accounts SET pavos = $1 WHERE id = $2`, pavos, accountID)
 	if err != nil {
-		fmt.Printf("Error updating PaVos: %v", err)
+		fmt.Printf("Error updating PaVos: %v\n", err)
 	}
 	return err
 }
@@ -437,24 +317,6 @@ func GetTransactionsByAccountIDs(db *sql.DB, accountIDs []uuid.UUID) ([]types.Tr
 	return transactions, rows.Err()
 }
 
-func GetTransactions(db *sql.DB) ([]types.Transaction, error) {
-	var transactions []types.Transaction
-	rows, err := db.Query(`SELECT id, game_account_id, sender_name, receiver_id, receiver_username, object_store_id, object_store_name, regular_price, final_price, gift_image, created_at FROM transactions`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var tx types.Transaction
-		if err := rows.Scan(&tx.ID, &tx.GameAccountID, &tx.SenderName, &tx.ReceiverID, &tx.ReceiverName, &tx.ObjectStoreID, &tx.ObjectStoreName, &tx.RegularPrice, &tx.FinalPrice, &tx.GiftImage, &tx.CreatedAt); err != nil {
-			return nil, err
-		}
-		transactions = append(transactions, tx)
-	}
-	return transactions, nil
-}
-
 // CalculateRemainingGifts properly calculates remaining gifts based on 24-hour cooldown
 func CalculateRemainingGifts(db *sql.DB, accountID uuid.UUID) (int, error) {
 	// Count transactions that are less than 24 hours old
@@ -471,8 +333,8 @@ func CalculateRemainingGifts(db *sql.DB, accountID uuid.UUID) (int, error) {
 		return 0, fmt.Errorf("could not count used gifts: %w", err)
 	}
 
-	// Each account starts with 5 gifts, so remaining = 5 - used
-	remainingGifts := 5 - usedGifts
+	// Each account has MaxGiftsPer24h gifts, so remaining = max - used
+	remainingGifts := MaxGiftsPer24h - usedGifts
 	if remainingGifts < 0 {
 		remainingGifts = 0 // Ensure we don't go negative
 	}
@@ -504,27 +366,43 @@ func UpdateAllRemainingGifts(db *sql.DB) error {
 	return nil
 }
 
-// GetNextGiftSlotTime returns the time when the next gift slot will become available
-func GetNextGiftSlotTime(db *sql.DB, accountID uuid.UUID) (*time.Time, error) {
-	var nextSlotTime time.Time
-	err := db.QueryRow(`
-		SELECT created_at + INTERVAL '24 hours'
-		FROM transactions 
-		WHERE game_account_id = $1 
-		AND created_at >= NOW() - INTERVAL '24 hours'
-		ORDER BY created_at ASC
-		LIMIT 1
-	`, accountID).Scan(&nextSlotTime)
+// MaxGiftsPer24h is how many gifts one account may send in a rolling 24 hours.
+const MaxGiftsPer24h = 5
 
-	if err != nil {
-		if err == sql.ErrNoRows {
-			// No recent transactions, all slots are available
-			return nil, nil
-		}
-		return nil, fmt.Errorf("could not get next gift slot time: %w", err)
+// nextSlotTime returns when the account will have a free gift slot again, given
+// the expiry times of its used slots (oldest first, at least one). A slot only
+// frees up once fewer than MaxGiftsPer24h of them are still running, which is
+// the expiry of the oldest one unless the account is (by a sync mismatch)
+// above the maximum.
+func nextSlotTime(expiries []time.Time) time.Time {
+	idx := 0
+	if len(expiries) > MaxGiftsPer24h {
+		idx = len(expiries) - MaxGiftsPer24h
 	}
+	return expiries[idx]
+}
 
-	return &nextSlotTime, nil
+// buildSlotStatus assembles the gift-slot status payload shared by the single
+// and batch endpoints.
+func buildSlotStatus(remaining int, expiries []time.Time) map[string]interface{} {
+	if expiries == nil {
+		expiries = []time.Time{}
+	}
+	status := map[string]interface{}{
+		"remaining_gifts":   remaining,
+		"max_gifts":         MaxGiftsPer24h,
+		"used_gifts":        MaxGiftsPer24h - remaining,
+		"slot_expiry_times": expiries,
+	}
+	if len(expiries) > 0 {
+		next := nextSlotTime(expiries)
+		status["next_slot_available"] = next
+		status["time_until_next_slot"] = time.Until(next).String()
+	} else {
+		status["next_slot_available"] = nil
+		status["time_until_next_slot"] = "All slots available"
+	}
+	return status
 }
 
 // GetGiftSlotStatus returns detailed information about gift slot availability
@@ -533,33 +411,11 @@ func GetGiftSlotStatus(db *sql.DB, accountID uuid.UUID) (map[string]interface{},
 	if err != nil {
 		return nil, fmt.Errorf("could not calculate remaining gifts: %w", err)
 	}
-
-	nextSlotTime, err := GetNextGiftSlotTime(db, accountID)
-	if err != nil {
-		return nil, fmt.Errorf("could not get next slot time: %w", err)
-	}
-
 	slotExpiryTimes, err := GetAllSlotExpiryTimes(db, accountID)
-	if err != nil || slotExpiryTimes == nil {
-		slotExpiryTimes = []time.Time{}
+	if err != nil {
+		return nil, fmt.Errorf("could not get slot expiry times: %w", err)
 	}
-
-	status := map[string]interface{}{
-		"remaining_gifts":   remainingGifts,
-		"max_gifts":         5,
-		"used_gifts":        5 - remainingGifts,
-		"slot_expiry_times": slotExpiryTimes,
-	}
-
-	if nextSlotTime != nil {
-		status["next_slot_available"] = nextSlotTime
-		status["time_until_next_slot"] = time.Until(*nextSlotTime).String()
-	} else {
-		status["next_slot_available"] = nil
-		status["time_until_next_slot"] = "All slots available"
-	}
-
-	return status, nil
+	return buildSlotStatus(remainingGifts, slotExpiryTimes), nil
 }
 
 // BatchCalculateRemainingGifts calculates remaining gifts for multiple accounts in a single query
@@ -596,7 +452,7 @@ func BatchCalculateRemainingGifts(db *sql.DB, accountIDs []uuid.UUID) (map[uuid.
 	result := make(map[uuid.UUID]int)
 	for _, accountID := range accountIDs {
 		usedGifts := usedGiftsMap[accountID] // defaults to 0 if not found
-		remainingGifts := 5 - usedGifts
+		remainingGifts := MaxGiftsPer24h - usedGifts
 		if remainingGifts < 0 {
 			remainingGifts = 0
 		}
@@ -643,29 +499,14 @@ func BatchGetGiftSlotStatus(db *sql.DB, accountIDs []uuid.UUID) (map[uuid.UUID]m
 
 	result := make(map[uuid.UUID]map[string]interface{})
 	for _, accountID := range accountIDs {
-		remainingGifts := remainingGiftsMap[accountID]
-		expiryTimes := allExpiryTimes[accountID]
-		if expiryTimes == nil {
-			expiryTimes = []time.Time{}
-		}
-
-		status := map[string]interface{}{
-			"remaining_gifts":   remainingGifts,
-			"max_gifts":         5,
-			"used_gifts":        5 - remainingGifts,
-			"slot_expiry_times": expiryTimes,
-		}
-
-		if len(expiryTimes) > 0 {
-			status["next_slot_available"] = expiryTimes[0]
-			status["time_until_next_slot"] = time.Until(expiryTimes[0]).String()
-		} else {
-			status["next_slot_available"] = nil
-			status["time_until_next_slot"] = "All slots available"
-		}
-
-		result[accountID] = status
+		result[accountID] = buildSlotStatus(remainingGiftsMap[accountID], allExpiryTimes[accountID])
 	}
+	return result, rows.Err()
+}
 
-	return result, nil
+// IsUniqueViolation reports whether err is PostgreSQL's unique-constraint
+// violation (e.g. a username that already exists).
+func IsUniqueViolation(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && pqErr.Code == "23505"
 }

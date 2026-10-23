@@ -6,7 +6,7 @@ cooldown, pavos (V-Bucks) tracking and transaction history.
 
 ## Stack
 
-- Go 1.24, [Gin](https://github.com/gin-gonic/gin)
+- Go 1.26, [Gin](https://github.com/gin-gonic/gin)
 - PostgreSQL (`lib/pq`)
 - JWT auth (`golang-jwt/jwt/v5`), bcrypt password hashing
 - Epic Games OAuth (device-code + device-auth grants)
@@ -45,9 +45,31 @@ disables it), the backend reads the account's `common_core` profile from Epic:
   information: web gifts are matched (±30 min) and never duplicated, and an
   implausible history (>10 gifts / 24h) is ignored.
 
-After every gift the account is re-read from Epic (6 s and 60 s later). Epic
-calls are spaced out and use one shared, per-account serialized token refresh.
-A failed or malformed Epic response never overwrites stored data.
+After every gift the account is re-read from Epic (6 s and 60 s later), and an
+account is also read right before a gift is sent, so gifts sent from inside the
+game are already counted. Epic calls are spaced out and use one shared,
+per-account serialized token refresh. A failed or malformed Epic response never
+overwrites stored data. `POST /refreshpavos` answers from the stored values if
+the account was read less than 10 s ago, so several open tabs cannot flood Epic.
+
+### Friends
+
+Linked accounts accept pending friend requests automatically. An account whose
+friend list is full (`MAX_FRIENDS`, default 1000, or Epic's
+`invitee_friendships_limit_exceeded`) is skipped, and re-checked every 10
+minutes so it resumes by itself once friends are removed by hand. Epic
+throttling (429) stops the batch for that round without marking the account as
+full. The friend count is part of the account list (`friendsCount`,
+`friendsMax`, `friendsFull`).
+
+### Account credentials
+
+Linking creates permanent Epic *device-auth* credentials (stored in `secrets`),
+which survive the account signing in to the game. An account without them
+depends on a refresh token that Epic can revoke at any time; the account list
+reports this as `deviceAuth: false` and the dashboard flags it. If Epic rejects
+the stored credentials for good the account is **kept** and reported as
+needing to be linked again (`needs_relink`); it is never deleted automatically.
 
 ## Tests
 

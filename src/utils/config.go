@@ -56,8 +56,19 @@ func ValidateConfig() error {
 	if Config.DBName == "" {
 		missing = append(missing, "DB_NAME")
 	}
+	// Without the Epic app credentials nothing that talks to Epic can work
+	// (linking, refreshing tokens, gifting): fail at startup, not at 3 a.m.
+	if Config.Epic_client == "" {
+		missing = append(missing, "EPIC_CLIENT")
+	}
+	if Config.Epic_secret == "" {
+		missing = append(missing, "EPIC_SECRET")
+	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing required environment variables: %v", missing)
+	}
+	if len(Config.SecretKey) < 32 {
+		log.Printf("WARNING: SECRET_KEY has only %d characters. Use at least 32 random ones (openssl rand -hex 32): anyone who guesses it can forge login tokens.", len(Config.SecretKey))
 	}
 	return nil
 }

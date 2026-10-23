@@ -632,6 +632,9 @@ func TestRefreshPavosEndpointReadsEpic(t *testing.T) {
 		t.Errorf("status %d pavos %d body %s", w.Code, storedPavos(t, db), w.Body.String())
 	}
 
+	// (a refresh right after another is served from the stored values, so age
+	// the last read first)
+	db.Exec(`UPDATE game_accounts SET pavos_synced_at = now() - interval '1 minute'`)
 	f.profileHook = func(string) (int, string) { return 500, `boom` }
 	w = postJSON(r, tok, "/refreshpavos", `{"account_id":"11111111-2222-3333-4444-555555555555"}`)
 	if w.Code != http.StatusBadGateway || storedPavos(t, db) != 4321 {

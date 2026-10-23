@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -146,5 +147,62 @@ func TestThrottlingStopsTheBatchWithoutMarkingTheAccountFull(t *testing.T) {
 	}
 	if friendsState(t, testAccountID).Full {
 		t.Error("throttling must not mark the account as full")
+	}
+}
+
+// After friends are removed by hand the account must stop being "full" even when
+// nobody is waiting to be accepted at that moment (it used to be flagged full
+// again from the stale state, and so only accepted once per re-check).
+func TestFullFlagIsClearedWhenRoomAppearsEvenWithNothingPending(t *testing.T) {
+	db := requireDB(t)
+	f := newFakeEpic(t)
+	setMaxFriends(t, 1000)
+	seedAccount(t, db, accountOpts{withSecrets: true})
+	friendsAttempts.Delete(testAccountID)
+	if _, err := db.Exec(`UPDATE game_accounts SET friends_count = 1000, friends_full = true, friends_synced_at = now() - interval '1 hour'`); err != nil {
+		t.Fatal(err)
+	}
+	f.summaryHook = func() (int, string) { return 200, summaryWithFriends(990) }
+	f.incoming = `[]`
+
+	runFriendRound(t)
+
+	st := friendsState(t, testAccountID)
+	if st.Full || st.Count == nil || *st.Count != 990 {
+		t.Errorf("state = %+v, want not full with 990 friends", st)
+	}
+}
+
+func TestAccountNeedingRelinkIsNotPolledEveryRound(t *testing.T) {
+	db := requireDB(t)
+	f := newFakeEpic(t)
+	// an expired token and no device auth: every call has to refresh, and Epic
+	// says the refresh token is gone for good
+	seedAccount(t, db, accountOpts{tokenExpiry: time.Now().Add(-time.Hour)})
+	friendsAttempts.Delete(testAccountID)
+	friendsPausedUntil.Delete(testAccountID)
+	f.tokenHook = func(grant string) (int, string) {
+		if grant == "refresh_token" {
+			return 400, `{"errorCode":"errors.com.epicgames.account.auth_token.invalid_refresh_token","errorMessage":"Sorry the refresh token is invalid. Reason: TOKEN_NOT_FOUND"}`
+		}
+		return 0, ""
+	}
+
+	for i := 0; i < 4; i++ {
+		runFriendRound(t)
+	}
+	if n := f.grantCount("refresh_token"); n != 1 {
+		t.Errorf("a broken account made %d refresh attempts in 4 rounds, want 1 (then paused)", n)
+	}
+	if f.incomingCalls != 0 {
+		t.Errorf("the account was asked for friend requests %d times", f.incomingCalls)
+	}
+
+	// once the pause is over it is tried again (e.g. after being linked again)
+	friendsPausedUntil.Store(testAccountID, time.Now().Add(-time.Second))
+	friendsAttempts.Delete(testAccountID)
+	runFriendRound(t)
+	if n := f.grantCount("refresh_token"); n != 2 {
+		t.Errorf("after the pause %d refresh attempts in total, want 2", n)
 	}
 }

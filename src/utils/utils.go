@@ -43,13 +43,18 @@ func CreateAdminToken(username string, userid string) (string, error) {
 	return tokenString, nil
 }
 
+// parseToken validates a JWT issued by this server: HS256 signature only (no
+// "alg" switching), not expired, and with an expiry claim.
+func parseToken(tokenString string) (*jwt.Token, error) {
+	return jwt.Parse(tokenString,
+		func(*jwt.Token) (interface{}, error) { return secretKey, nil },
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithExpirationRequired(),
+	)
+}
+
 func VerifyAdminToken(tokenString string) error {
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return secretKey, nil
-	})
+	token, err := parseToken(tokenString)
 	if err != nil {
 		return err
 	}
@@ -62,12 +67,7 @@ func VerifyAdminToken(tokenString string) error {
 }
 
 func VerifyToken(tokenString string) error {
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return secretKey, nil
-	})
+	token, err := parseToken(tokenString)
 	if err != nil {
 		return err
 	}

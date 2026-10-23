@@ -4,6 +4,7 @@ import (
 	"KidStoreBotBE/src/types"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,6 +32,12 @@ func EnsureSchema(db *sql.DB) error {
 		`ALTER TABLE game_accounts ADD COLUMN IF NOT EXISTS friends_full BOOLEAN NOT NULL DEFAULT false`,
 		`ALTER TABLE game_accounts ADD COLUMN IF NOT EXISTS friends_synced_at TIMESTAMPTZ`,
 		`CREATE INDEX IF NOT EXISTS idx_transactions_account_created ON transactions (game_account_id, created_at DESC)`,
+		// UpsertGameAccountSecrets relies on a unique account_id. A database
+		// created before that code may lack the constraint (and hold duplicate
+		// rows from linking the same account twice): keep the newest row of each
+		// account, then enforce uniqueness.
+		`DELETE FROM secrets a USING secrets b WHERE a.account_id = b.account_id AND a.ctid < b.ctid`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS secrets_account_id_key ON secrets (account_id)`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -82,6 +89,36 @@ func UpsertGameAccountSecrets(db *sql.DB, s types.GameAccountSecrets) error {
 		ON CONFLICT (account_id) DO UPDATE SET device_id = EXCLUDED.device_id, secret = EXCLUDED.secret`,
 		s.Owner_user_id, s.DeviceId, s.AccountId, s.Secret)
 	return err
+}
+
+// GetDeviceAuthAccounts reports which of the given accounts have permanent
+// device-auth credentials stored. Accounts without them depend on a refresh
+// token that Epic can revoke at any time (for example when the account signs in
+// to the game), so the UI flags them.
+func GetDeviceAuthAccounts(db *sql.DB, accountIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+	out := make(map[uuid.UUID]bool)
+	if len(accountIDs) == 0 {
+		return out, nil
+	}
+	hexIDs := make([]string, len(accountIDs))
+	for i, id := range accountIDs {
+		hexIDs[i] = strings.ReplaceAll(id.String(), "-", "")
+	}
+	rows, err := db.Query(`SELECT account_id FROM secrets WHERE account_id = ANY($1)`, pq.Array(hexIDs))
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return out, err
+		}
+		if id, perr := uuid.Parse(s); perr == nil {
+			out[id] = true
+		}
+	}
+	return out, rows.Err()
 }
 
 // ---------- pavos ----------

@@ -62,6 +62,7 @@ func setup(t *testing.T) (*gin.Engine, *sql.DB) {
 	auth.GET("/transactions", HandlerGetTransactionsByAccount(testDB))
 	auth.GET("/alltransactions", HandlerGetTransactionsAdmin(testDB))
 	auth.GET("/allfortniteaccounts", HandlerGetAllGameAccounts(testDB))
+	auth.GET("/fortniteaccountsofuser", HandlerGetGameAccountsByOwner(testDB))
 
 	// reset the limiters between tests
 	loginLimiterIPUser = utils.NewAttemptLimiter(8, 10*60*1e9)
@@ -253,5 +254,114 @@ func TestTransactionsAreReturnedOldestFirstAndScopedToTheOwner(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &out)
 	if w.Code != 200 || len(out.Transactions) != 2 || out.Transactions[0].ObjectStoreName != "old" || out.Transactions[1].ObjectStoreName != "new" {
 		t.Errorf("%d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEditingAUserWithoutANewPasswordKeepsTheOldOne(t *testing.T) {
+	r, db := setup(t)
+	adminID := addUser(t, db, "admin", "x")
+	worker := addUser(t, db, "worker", "orig")
+	tok := tokenFor(t, adminID, "admin", true)
+
+	// the edit form always sends the password field, blank when untouched
+	body := `{"id":"` + worker.String() + `","username":"worker2","email":"w@kidstore.pe","password":""}`
+	if w := call(r, "POST", "/updateuser", tok, body); w.Code != 200 {
+		t.Fatalf("editing a user without touching the password failed: %d %s", w.Code, w.Body.String())
+	}
+	var name, pw string
+	var email *string
+	db.QueryRow(`SELECT username, email, password FROM users WHERE id=$1`, worker).Scan(&name, &email, &pw)
+	if name != "worker2" || email == nil || *email != "w@kidstore.pe" {
+		t.Errorf("username/email not saved: %q %v", name, email)
+	}
+	if pw != "orig" {
+		t.Errorf("the password changed to %q although none was given", pw)
+	}
+
+	// only a blank password and nothing else is "no changes"
+	if w := call(r, "POST", "/updateuser", tok, `{"id":"`+worker.String()+`","password":"  "}`); w.Code != 400 {
+		t.Errorf("an update with nothing to change: %d, want 400", w.Code)
+	}
+	// an unknown id is reported, not silently ignored
+	if w := call(r, "POST", "/updateuser", tok, `{"id":"`+uuid.NewString()+`","username":"ghost"}`); w.Code != 404 {
+		t.Errorf("updating a user that does not exist: %d, want 404", w.Code)
+	}
+}
+
+func TestUsernamesAreValidatedAndUnique(t *testing.T) {
+	r, db := setup(t)
+	adminID := addUser(t, db, "admin", "x")
+	addUser(t, db, "ana", "pw")
+	other := addUser(t, db, "beto", "pw")
+	tok := tokenFor(t, adminID, "admin", true)
+
+	for _, c := range []struct {
+		name, path, body string
+		want             int
+	}{
+		{"new user ok", "/addnewuser", `{"username":"carla","password":"secret"}`, 200},
+		{"duplicate name", "/addnewuser", `{"username":"ana","password":"secret"}`, 409},
+		{"blank name", "/addnewuser", `{"username":"   ","password":"secret"}`, 400},
+		{"blank password", "/addnewuser", `{"username":"dino","password":"  "}`, 400},
+		{"name too long", "/addnewuser", `{"username":"` + strings.Repeat("x", 65) + `","password":"secret"}`, 400},
+		{"rename to an existing name", "/updateuser", `{"id":"` + other.String() + `","username":"ana"}`, 409},
+		{"rename to blank", "/updateuser", `{"id":"` + other.String() + `","username":" "}`, 400},
+	} {
+		if w := call(r, "POST", c.path, tok, c.body); w.Code != c.want {
+			t.Errorf("%s: %d, want %d (%s)", c.name, w.Code, c.want, w.Body.String())
+		}
+	}
+	var n int
+	db.QueryRow(`SELECT COUNT(*) FROM users WHERE username IN ('ana','beto','carla')`).Scan(&n)
+	if n != 3 {
+		t.Errorf("%d of the three expected users exist", n)
+	}
+	// the new user's password is hashed
+	var pw string
+	db.QueryRow(`SELECT password FROM users WHERE username='carla'`).Scan(&pw)
+	if !utils.IsHashed(pw) {
+		t.Errorf("password stored as %q", pw)
+	}
+}
+
+func TestAccountListShowsDeviceAuthAndFriendLimits(t *testing.T) {
+	r, db := setup(t)
+	owner := addUser(t, db, "owner", "pw")
+	withSecrets := uuid.MustParse("aaaaaaaa-0000-0000-0000-000000000001")
+	without := uuid.MustParse("aaaaaaaa-0000-0000-0000-000000000002")
+	for id, name := range map[uuid.UUID]string{withSecrets: "Permanent", without: "Fragile"} {
+		if _, err := db.Exec(`INSERT INTO game_accounts (id, display_name, access_token, refresh_token, owner_user_id) VALUES ($1,$2,'t','r',$3)`, id, name, owner); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Exec(`INSERT INTO secrets (account_id, owner_user_id, device_id, secret) VALUES ('aaaaaaaa000000000000000000000001', $1, 'dev', 'sec')`, owner)
+	db.Exec(`UPDATE game_accounts SET friends_count = 1000, friends_full = true WHERE id = $1`, without)
+
+	w := call(r, "GET", "/fortniteaccountsofuser", tokenFor(t, owner, "owner", false), "")
+	var out struct {
+		GameAccounts []struct {
+			DisplayName  string
+			DeviceAuth   bool
+			FriendsFull  bool
+			FriendsMax   int
+			FriendsCount *int
+		}
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	got := map[string]int{}
+	for i, a := range out.GameAccounts {
+		got[a.DisplayName] = i
+	}
+	p, f := out.GameAccounts[got["Permanent"]], out.GameAccounts[got["Fragile"]]
+	if !p.DeviceAuth || f.DeviceAuth {
+		t.Errorf("deviceAuth: Permanent=%v Fragile=%v, want true/false", p.DeviceAuth, f.DeviceAuth)
+	}
+	if !f.FriendsFull || f.FriendsCount == nil || *f.FriendsCount != 1000 || p.FriendsFull || p.FriendsCount != nil {
+		t.Errorf("friend state wrong: %+v / %+v", p, f)
+	}
+	if p.FriendsMax <= 0 {
+		t.Errorf("friendsMax = %d, want the configured capacity", p.FriendsMax)
 	}
 }

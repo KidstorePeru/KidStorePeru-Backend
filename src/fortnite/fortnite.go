@@ -43,7 +43,7 @@ func HandlerSendGift(db *sql.DB) gin.HandlerFunc {
 		var req types.GiftRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			fmt.Printf("Failed to bind JSON: %v\n", err)
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Faltan datos del regalo o son inválidos. Recarga la tienda e inténtalo de nuevo.", "details": err.Error()})
 			return
 		}
 
@@ -344,40 +344,34 @@ func HandlerRefreshPavosForAccount(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Get user ID from token
-		_, userID, err := utils.GetUserIdFromToken(c)
-		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"success": false,
-				"error":   "Could not get user ID from token",
-				"details": err.Error(),
-			})
+		if !authorizeAccountAccess(c, gameAccount) {
 			return
 		}
 
-		// Check if user is admin or owns the account
-		isAdmin := utils.IsTokenAdmin(c)
-		if !isAdmin && gameAccount.OwnerUserID != userID {
-			c.JSON(http.StatusForbidden, gin.H{
-				"success": false,
-				"error":   "You don't have permission to refresh pavos for this account",
-			})
-			return
+		// Several tabs (and the gifts page's own live refresh) can ask for the
+		// same account at once: within refreshMinInterval of the last read the
+		// stored values are returned instead of asking Epic again.
+		var res *SyncResult
+		if syncedWithin(db, accountID, refreshMinInterval) {
+			if pavos, perr := database.GetPavos(db, accountID); perr == nil {
+				res = &SyncResult{Pavos: pavos}
+			}
 		}
-
-		// Read the real pavos (and gift history) from Epic.
-		res, err := SyncAccountFromEpic(db, accountID)
-		if err != nil {
-			resp := gin.H{
-				"success": false,
-				"error":   "No se pudieron leer los pavos desde Epic",
-				"details": describeAccountError(err),
+		if res == nil {
+			// Read the real pavos (and gift history) from Epic.
+			res, err = SyncAccountFromEpic(db, accountID)
+			if err != nil {
+				resp := gin.H{
+					"success": false,
+					"error":   "No se pudieron leer los pavos desde Epic",
+					"details": describeAccountError(err),
+				}
+				if errors.Is(err, ErrNeedsRelink) {
+					resp["needs_relink"] = true
+				}
+				c.JSON(http.StatusBadGateway, resp)
+				return
 			}
-			if errors.Is(err, ErrNeedsRelink) {
-				resp["needs_relink"] = true
-			}
-			c.JSON(http.StatusBadGateway, resp)
-			return
 		}
 
 		// Also keep the friend-list count fresh (at most every 2 minutes);
@@ -444,24 +438,7 @@ func HandlerGetGiftSlotStatus(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Get user ID from token
-		_, userID, err := utils.GetUserIdFromToken(c)
-		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"success": false,
-				"error":   "Could not get user ID from token",
-				"details": err.Error(),
-			})
-			return
-		}
-
-		// Check if user is admin or owns the account
-		isAdmin := utils.IsTokenAdmin(c)
-		if !isAdmin && gameAccount.OwnerUserID != userID {
-			c.JSON(http.StatusForbidden, gin.H{
-				"success": false,
-				"error":   "You don't have permission to view this account's gift status",
-			})
+		if !authorizeAccountAccess(c, gameAccount) {
 			return
 		}
 
@@ -536,24 +513,7 @@ func HandlerUpdatePavosForAccount(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Get user ID from token
-		_, userID, err := utils.GetUserIdFromToken(c)
-		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"success": false,
-				"error":   "Could not get user ID from token",
-				"details": err.Error(),
-			})
-			return
-		}
-
-		// Check if user is admin or owns the account
-		isAdmin := utils.IsTokenAdmin(c)
-		if !isAdmin && gameAccount.OwnerUserID != userID {
-			c.JSON(http.StatusForbidden, gin.H{
-				"success": false,
-				"error":   "You don't have permission to update pavos for this account",
-			})
+		if !authorizeAccountAccess(c, gameAccount) {
 			return
 		}
 
@@ -648,20 +608,12 @@ func HandlerUpdateRemainingGifts(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		_, userID, err := utils.GetUserIdFromToken(c)
-		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "Unauthorized"})
+		if !authorizeAccountAccess(c, gameAccount) {
 			return
 		}
 
-		isAdmin := utils.IsTokenAdmin(c)
-		if !isAdmin && gameAccount.OwnerUserID != userID {
-			c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "No permission"})
-			return
-		}
-
-		if req.Amount < 0 || req.Amount > 5 {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Amount must be between 0 and 5"})
+		if req.Amount < 0 || req.Amount > database.MaxGiftsPer24h {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": fmt.Sprintf("Amount must be between 0 and %d", database.MaxGiftsPer24h)})
 			return
 		}
 
@@ -686,8 +638,8 @@ func HandlerUpdateRemainingGifts(db *sql.DB) gin.HandlerFunc {
 		case "override":
 			newVal = req.Amount
 		}
-		if newVal > 5 {
-			newVal = 5
+		if newVal > database.MaxGiftsPer24h {
+			newVal = database.MaxGiftsPer24h
 		}
 
 		// Calcular cuántos slots se están usando (restando)

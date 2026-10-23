@@ -24,6 +24,9 @@ var (
 	loginLimiterUser   = utils.NewAttemptLimiter(40, 10*time.Minute)
 )
 
+// maxUsernameLen bounds usernames so a pasted blob cannot end up as one.
+const maxUsernameLen = 64
+
 func HandlerLoginForm(db *sql.DB, adminUsername string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var form types.Login
@@ -125,8 +128,13 @@ func HandlerAddNewUser(db *sql.DB) gin.HandlerFunc {
 		if newUser.ID == uuid.Nil {
 			newUser.ID = uuid.New()
 		}
-		if newUser.Password == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "password is required"})
+		newUser.Username = strings.TrimSpace(newUser.Username)
+		if newUser.Username == "" || len(newUser.Username) > maxUsernameLen {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": fmt.Sprintf("El nombre de usuario es obligatorio (máximo %d caracteres)", maxUsernameLen)})
+			return
+		}
+		if strings.TrimSpace(newUser.Password) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "La contraseña es obligatoria"})
 			return
 		}
 		hashed, err := utils.HashPassword(newUser.Password)
@@ -138,7 +146,11 @@ func HandlerAddNewUser(db *sql.DB) gin.HandlerFunc {
 		newUser.CreatedAt = time.Now()
 		newUser.UpdatedAt = time.Now()
 		if err := database.AddUser(db, newUser); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not add new user", "details": err.Error()})
+			if database.IsUniqueViolation(err) {
+				c.JSON(http.StatusConflict, gin.H{"success": false, "error": "Ya existe un usuario con ese nombre"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "No se pudo crear el usuario", "details": err.Error()})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "message": "User added successfully"})
@@ -220,8 +232,13 @@ func HandlerUpdateUser(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 		delete(updates, "id")
+		// The edit form always sends the password field; blank means "keep the
+		// current password", never "set an empty password".
+		if p, isStr := updates["password"].(string); isStr && strings.TrimSpace(p) == "" {
+			delete(updates, "password")
+		}
 		if len(updates) == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "no fields to update"})
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "No hay cambios para guardar"})
 			return
 		}
 
@@ -237,10 +254,19 @@ func HandlerUpdateUser(db *sql.DB) gin.HandlerFunc {
 				c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": fmt.Sprintf("field %q cannot be updated", key)})
 				return
 			}
+			if key == "username" {
+				name, ok := value.(string)
+				name = strings.TrimSpace(name)
+				if !ok || name == "" || len(name) > maxUsernameLen {
+					c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": fmt.Sprintf("El nombre de usuario es obligatorio (máximo %d caracteres)", maxUsernameLen)})
+					return
+				}
+				value = name
+			}
 			if key == "password" {
 				plain, ok := value.(string)
-				if !ok || plain == "" {
-					c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "password must be a non-empty string"})
+				if !ok {
+					c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "La contraseña debe ser texto"})
 					return
 				}
 				hashed, err := utils.HashPassword(plain)
@@ -259,9 +285,17 @@ func HandlerUpdateUser(db *sql.DB) gin.HandlerFunc {
 		argIdx++
 		query := fmt.Sprintf(`UPDATE users SET %s WHERE id = $%d`, strings.Join(setParts, ", "), argIdx)
 		args = append(args, id)
-		_, err = db.Exec(query, args...)
+		res, err := db.Exec(query, args...)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Could not update user", "details": err.Error()})
+			if database.IsUniqueViolation(err) {
+				c.JSON(http.StatusConflict, gin.H{"success": false, "error": "Ya existe un usuario con ese nombre"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "No se pudo actualizar el usuario", "details": err.Error()})
+			return
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "El usuario no existe"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "message": "User updated successfully"})
@@ -329,6 +363,11 @@ func buildSimplifiedAccounts(db *sql.DB, gameAccounts []types.GameAccount) []typ
 		fmt.Printf("Could not read pavos sync times: %v\n", err)
 	}
 
+	deviceAuth, err := database.GetDeviceAuthAccounts(db, accountIDs)
+	if err != nil {
+		fmt.Printf("Could not read device-auth state: %v\n", err)
+	}
+
 	friendsMap, err := database.GetFriendsStates(db, accountIDs)
 	if err != nil {
 		fmt.Printf("Could not read friend-list states: %v\n", err)
@@ -363,6 +402,7 @@ func buildSimplifiedAccounts(db *sql.DB, gameAccounts []types.GameAccount) []typ
 			t := t
 			dto.PavosSyncedAt = &t
 		}
+		dto.DeviceAuth = deviceAuth[account.ID]
 		dto.FriendsMax = utils.Config.MaxFriends
 		if st, found := friendsMap[account.ID]; found {
 			dto.FriendsCount = st.Count
